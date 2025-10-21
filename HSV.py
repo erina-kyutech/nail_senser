@@ -108,7 +108,7 @@ def main():
         gray0 = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
         # 表示用
-        Hn = cv2.convertScaleAbs(Hc, alpha=255/30.0)
+        Hn = cv2.convertScaleAbs(Hc, alpha=255/100.0)
         HS  = cv2.addWeighted(Hn, 0.5, Sc, 0.5, 0)
 
         # --- このへん置き換え ---
