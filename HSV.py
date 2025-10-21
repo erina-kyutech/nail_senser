@@ -111,17 +111,25 @@ def main():
         Hn = cv2.convertScaleAbs(Hc, alpha=255/30.0)
         HS  = cv2.addWeighted(Hn, 0.5, Sc, 0.5, 0)
 
+        # --- このへん置き換え ---
         # フィルタ
-        Orig = denoise(gray0); Gv = denoise(G)
-        Hv = denoise(Hn); Sv = denoise(Sc); Vv = denoise(Vc); HSv = denoise(HS)
+        Gv = denoise(G)
+        Hv = denoise(Hn)
+        Sv = denoise(Sc)
+        Vv = denoise(Vc)
+        HSv = denoise(HS)
+
+        # 🔸 変更点：Originalだけカラー表示に変更
+        Orig_color = cv2.GaussianBlur(roi, (5, 5), 1)
 
         # タイル（3×2）
-        t1 = make_tile_gray(Orig, "Original",      (0,255,255))
-        t2 = make_tile_gray(Gv,   "RGB G",         (0,255,0))
-        t3 = make_tile_gray(Hv,   "HSV H",         (0,215,255))
-        t4 = make_tile_gray(Sv,   "HSV S",         (200,200,200))
-        t5 = make_tile_gray(Vv,   "HSV V",         (255,255,255))
-        t6 = make_tile_gray(HSv,  "HSV H+S",       (255,180,100))
+        t1 = make_tile_color(Orig_color, "Original", (0, 255, 255))  # ←ここだけcolor版
+        t2 = make_tile_gray(Gv, "RGB G", (0, 255, 0))
+        t3 = make_tile_gray(Hv, "HSV H", (0, 215, 255))
+        t4 = make_tile_gray(Sv, "HSV S", (200, 200, 200))
+        t5 = make_tile_gray(Vv, "HSV V", (255, 255, 255))
+        t6 = make_tile_gray(HSv, "HSV H+S", (255, 180, 100))
+        # ---------------------------
 
         row1 = hstack_same_height(hstack_same_height(t1, t2), t3)
         row2 = hstack_same_height(hstack_same_height(t4, t5), t6)
