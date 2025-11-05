@@ -1553,169 +1553,172 @@ class graphmake:
 
   def updateframe(self, dum):
     t0 = time.perf_counter()
-    # 左側グラフ(カメラ)
-    ret, base = self.capture.read()
 
-    # 画像を切り出し
+    # カメラからフレームを取得
+    ret, base = self.capture.read()
+    if not ret:
+      return self.image_plt,
+
+    # ROIを切り出し（BGR）
     ROI = base[self.roiy:self.roiy + self.h, self.roix:self.roix + self.w]
 
-    # グレースケールに変換(緑だけ抽出)
-    img_blue_c1, img_green_c1, img_red_c1 = cv2.split(ROI)
-    gray = img_green_c1
+    # ---- 画像フィルタ（共通） ----
+    def apply_filter(img):
+      """1ch or 3ch画像に対してGaussian+CLAHEを適用"""
+      if img.ndim == 2:  # グレースケール
+        blur = cv2.GaussianBlur(img, (5, 5), 1)
+        clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+        return clahe.apply(blur)
+      else:
+        channels = cv2.split(img)
+        proc = []
+        for ch in channels:
+          blur = cv2.GaussianBlur(ch, (5, 5), 1)
+          clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+          proc.append(clahe.apply(blur))
+        return cv2.merge(proc)
 
-    # ガウシアンフィルタ(ノイズ除去)
-    gau = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
+    # ---- 3種類の表現を生成 ----
+    roi_color = ROI.copy()                              # BGR
+    g_channel = roi_color[:, :, 1]                      # G
+    g_filtered = apply_filter(g_channel)                # 1ch
+    rgb_filtered = apply_filter(roi_color)              # 3ch(BGRのまま)
+    hsv = cv2.cvtColor(roi_color, cv2.COLOR_BGR2HSV)
+    hsv_filtered = apply_filter(hsv)                    # 3ch(HSV)
+    hsv_bgr = cv2.cvtColor(hsv_filtered, cv2.COLOR_HSV2BGR)
 
-    # ヒストグラム平坦化
-    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
-    hist = clahe.apply(gau)
+    # 左側の表示はGチャンネルで
+    self.image_plt.set_array(g_filtered)
 
-    # 左側のグラフに動画表示
-    self.image_plt.set_array(hist)
-
+    # 教示線の更新（self.rec_tに応じて）
     self.Fz_line = self.Fz / 2 * (1 - np.cos(2 * np.pi * self.fz * self.t_line))
-
     self.Fzz_line = 0
 
     if self.rec_t < 5:
       self.Ff_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line))
-    elif (5 <= self.rec_t and self.rec_t < 10) or (55 <= self.rec_t and self.rec_t < 60):
-      self.Ff_line = (math.sqrt(3) / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)))
-    elif (10 <= self.rec_t and self.rec_t < 15) or (50 <= self.rec_t and self.rec_t < 55):
-      self.Ff_line = (1 / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)))
-    elif (15 <= self.rec_t and self.rec_t < 20) or (45 <= self.rec_t and self.rec_t < 50):
+    elif (5 <= self.rec_t < 10) or (55 <= self.rec_t < 60):
+      self.Ff_line = (math.sqrt(3)/2) * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.t_line)))
+    elif (10 <= self.rec_t < 15) or (50 <= self.rec_t < 55):
+      self.Ff_line = 0.5 * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.t_line)))
+    elif (15 <= self.rec_t < 20) or (45 <= self.rec_t < 50):
       self.Ff_line = 0
-    elif (20 <= self.rec_t and self.rec_t < 25) or (40 <= self.rec_t and self.rec_t < 45):
-      self.Ff_line = (1 / 2) * self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.t_line) - 1)
-    elif (25 <= self.rec_t and self.rec_t < 30) or (35 <= self.rec_t and self.rec_t < 40):
-      self.Ff_line = (math.sqrt(3) / 2) * (self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.t_line) - 1))
-    elif (30 <= self.rec_t and self.rec_t < 35):
-      self.Ff_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)) * (-1)
+    elif (20 <= self.rec_t < 25) or (40 <= self.rec_t < 45):
+      self.Ff_line = 0.5 * self.Fz/4 * (np.cos(2*np.pi*self.fz*self.t_line) - 1)
+    elif (25 <= self.rec_t < 30) or (35 <= self.rec_t < 40):
+      self.Ff_line = (math.sqrt(3)/2) * (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.t_line) - 1))
+    elif (30 <= self.rec_t < 35):
+      self.Ff_line = - self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.t_line))
 
-    if (self.rec_t < 5) or (30 <= self.rec_t and self.rec_t < 35):
+    if (self.rec_t < 5) or (30 <= self.rec_t < 35):
       self.Fr_line = 0
-    elif (5 <= self.rec_t and self.rec_t < 10) or (35 <= self.rec_t and self.rec_t < 40):
-      self.Fr_line = (1 / math.sqrt(3)) * self.Ff_line
-    elif (10 <= self.rec_t and self.rec_t < 15) or (40 <= self.rec_t and self.rec_t < 45):
+    elif (5 <= self.rec_t < 10) or (35 <= self.rec_t < 40):
+      self.Fr_line = (1/math.sqrt(3)) * self.Ff_line
+    elif (10 <= self.rec_t < 15) or (40 <= self.rec_t < 45):
       self.Fr_line = math.sqrt(3) * self.Ff_line
-    elif (15 <= self.rec_t and self.rec_t < 20):
-      self.Fr_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line))
-    elif (25 <= self.rec_t and self.rec_t < 30) or (55 <= self.rec_t and self.rec_t < 60):
-      self.Fr_line = (-1) * (1 / math.sqrt(3)) * self.Ff_line
-    elif (20 <= self.rec_t and self.rec_t < 25) or (50 <= self.rec_t and self.rec_t < 55):
-      self.Fr_line = (-1) * math.sqrt(3) * self.Ff_line
-    elif (45 <= self.rec_t and self.rec_t < 50):
-      self.Fr_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)) * (-1)
+    elif (15 <= self.rec_t < 20):
+      self.Fr_line = self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.t_line))
+    elif (25 <= self.rec_t < 30) or (55 <= self.rec_t < 60):
+      self.Fr_line = - (1/math.sqrt(3)) * self.Ff_line
+    elif (20 <= self.rec_t < 25) or (50 <= self.rec_t < 55):
+      self.Fr_line = - math.sqrt(3) * self.Ff_line
+    elif (45 <= self.rec_t < 50):
+      self.Fr_line = - self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.t_line))
 
-    # 右側のグラフに教示線載せる
+    # 教示線を描画
     self.line.set_data(self.Fr_line, self.Ff_line)
     self.line_M.set_data(self.Fzz_line, self.Fz_line)
 
-    # 荷重計の取った値[g]を[gf]として[N]に変換(ここ並列処理にすると40msec高速化)
+    # センサ値（共有メモリから）
     Fz = normal_force.value / self.N2gf
     Fzz = 0
-
-
-    # せん断力(ここ並列処理にすると20msec高速化)
-
     Fr = shear_force1.value - shear_force3.value
     Ff = shear_force2.value - shear_force4.value
-    # 測定状態(rec_flag==True)
-    if rec_flag.value:
-      # 測定開始からの経過時間(測定前予備時間含む)
-      # rキーを押してからの経過時間
-      self.t = time.perf_counter() - self.graphstart
 
-      # 測定開始からの経過時間(測定前予備時間含まず)
-      # 画像を保存し始めてからの経過時間
+    # 記録状態
+    if rec_flag.value:
+      # タイミング更新
+      self.t = time.perf_counter() - self.graphstart
       self.rec_t = self.t - self.t_rest
 
-      # 測定前
       if self.rec_t < 0:
-        print(self.rec_t)
         self.t_line = np.arange(0.0, 5.0, 0.001)
 
-      # 測定中
-      elif self.rec_t > 0 and self.rec_t < self.rectime:
+      elif 0 < self.rec_t < self.rectime:
         self.t_line = np.arange(self.rec_t, self.rec_t + 5.0, 0.001)
-        print("recording", "time", round(self.rec_t, 3), "Ff", round(Ff, 2), "Fr", round(Fr, 2), "raw")
 
-        # 指先力の指令値
-        # 前後方向指令値
-        self.now_Fz = self.Fz / 2 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t))
-
+        # 指令値（表示用）
+        self.now_Fz  = self.Fz/2 * (1 - np.cos(2*np.pi*self.fz*self.rec_t))
         self.now_Fzz = 0
 
-
         if self.rec_t < 5:
-          self.now_Ff = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t))
-        elif (5 <= self.rec_t and self.rec_t < 10) or (55 <= self.rec_t and self.rec_t < 60):
-          self.now_Ff = (math.sqrt(3) / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t)))
-        elif (10 <= self.rec_t and self.rec_t < 15) or (50 <= self.rec_t and self.rec_t < 55):
-          self.now_Ff = (1 / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t)))
-        elif (15 <= self.rec_t and self.rec_t < 20) or (45 <= self.rec_t and self.rec_t < 50):
+          self.now_Ff = self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t))
+        elif (5 <= self.rec_t < 10) or (55 <= self.rec_t < 60):
+          self.now_Ff = (math.sqrt(3)/2) * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t)))
+        elif (10 <= self.rec_t < 15) or (50 <= self.rec_t < 55):
+          self.now_Ff = 0.5 * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t)))
+        elif (15 <= self.rec_t < 20) or (45 <= self.rec_t < 50):
           self.now_Ff = 0
-        elif (20 <= self.rec_t and self.rec_t < 25) or (40 <= self.rec_t and self.rec_t < 45):
-          self.now_Ff = (1 / 2) * self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1)
-        elif (25 <= self.rec_t and self.rec_t < 30) or (35 <= self.rec_t and self.rec_t < 40):
-          self.now_Ff = (math.sqrt(3) / 2) * (self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1))
-        elif (30 <= self.rec_t and self.rec_t < 35):
-          self.now_Ff = (self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1))
-        # 左右方向指令値
-        if (15 <= self.rec_t and self.rec_t < 20):
-          self.now_Fr = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t))
-        elif (10 <= self.rec_t and self.rec_t < 15) or (20 <= self.rec_t and self.rec_t < 25):
-          self.now_Fr = (math.sqrt(3) / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t)))
-        elif (5 <= self.rec_t and self.rec_t < 10) or (25 <= self.rec_t and self.rec_t < 30):
-          self.now_Fr = (1 / 2) * (self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.rec_t)))
-        elif (self.rec_t < 5) or (30 <= self.rec_t and self.rec_t < 35):
-          self.now_Fr = 0
-        elif (35 <= self.rec_t and self.rec_t < 40) or (55 <= self.rec_t and self.rec_t < 60):
-          self.now_Fr = (1 / 2) * self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1)
-        elif (40 <= self.rec_t and self.rec_t < 45) or (50 <= self.rec_t and self.rec_t < 55):
-          self.now_Fr = (math.sqrt(3) / 2) * (self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1))
-        elif (45 <= self.rec_t and self.rec_t < 50):
-          self.now_Fr = (self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1))
+        elif (20 <= self.rec_t < 25) or (40 <= self.rec_t < 45):
+          self.now_Ff = 0.5 * self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1)
+        elif (25 <= self.rec_t < 30) or (35 <= self.rec_t < 40):
+          self.now_Ff = (math.sqrt(3)/2) * (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1))
+        elif (30 <= self.rec_t < 35):
+          self.now_Ff = (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1))
 
-        framename = self.save_dir + "/" + str(self.datanum) + '.png'  # 保存する画像のパスと名前
-        cv2.imwrite(framename, hist)  # 画像を保存
-        self.data_writing.writerow([framename, Fz, Fr, Ff])  # 測定値をcsvに書き込み
+        if (15 <= self.rec_t < 20):
+          self.now_Fr = self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t))
+        elif (10 <= self.rec_t < 15) or (20 <= self.rec_t < 25):
+          self.now_Fr = (math.sqrt(3)/2) * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t)))
+        elif (5 <= self.rec_t < 10) or (25 <= self.rec_t < 30):
+          self.now_Fr = 0.5 * (self.Fz/4 * (1 - np.cos(2*np.pi*self.fz*self.rec_t)))
+        elif (self.rec_t < 5) or (30 <= self.rec_t < 35):
+          self.now_Fr = 0
+        elif (35 <= self.rec_t < 40) or (55 <= self.rec_t < 60):
+          self.now_Fr = 0.5 * (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1))
+        elif (40 <= self.rec_t < 45) or (50 <= self.rec_t < 55):
+          self.now_Fr = (math.sqrt(3)/2) * (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1))
+        elif (45 <= self.rec_t < 50):
+          self.now_Fr = (self.Fz/4 * (np.cos(2*np.pi*self.fz*self.rec_t) - 1))
+
+        # ここで3種類を保存
+        basepath = f"{self.save_dir}/{self.datanum:06d}"
+        cv2.imwrite(basepath + "_G.png",   g_filtered)   # 1ch
+        cv2.imwrite(basepath + "_RGB.png", rgb_filtered) # 3ch(BGR)
+        cv2.imwrite(basepath + "_HSV.png", hsv_bgr)      # 3ch(BGR)
+
+        # CSVは基準として _G を記録（学習時は *_G/_RGB/_HSV を拾う）
+        self.data_writing.writerow([basepath + "_G.png", Fz, Fr, Ff])
         self.datanum += 1
 
-      # 測定終了(ESCキーが押された時の処理)
       else:
-        self.data_csv.close()  # csvへの記録を終了
-        ser_flag.value = False  # 通信の終了
+        # 記録終了
+        self.data_csv.close()
+        ser_flag.value = False
         print("press esc")
-        self.ani.event_source.stop()  # グラフ更新の終了
+        self.ani.event_source.stop()
 
-      self.rec2.set_data(Fzz, Fz)  # 測定値プロットの更新
-      self.rec4.set_data(Fr, Ff)
-      self.now_F.set_data(self.now_Fr, self.now_Ff)  # 指令値プロットの更新
-      #追加
-      self.now_R.set_data(self.now_Fzz, self.now_Fz)
+    # プロット更新
+    self.rec2.set_data(Fzz, Fz)
+    self.rec4.set_data(Fr, Ff)
+    self.now_F.set_data(self.now_Fr, self.now_Ff)
+    self.now_R.set_data(self.now_Fzz, self.now_Fz)
 
-      return self.rec2,self.rec4, self.image_plt, self.line,self.line_M, self.now_F,self.now_R
-      # -----------ここまで測定処理-----------------------------
-
-    # 測定待機状態(rec_flag==False)
+    if rec_flag.value:
+      return self.rec2, self.rec4, self.image_plt, self.line, self.line_M, self.now_F, self.now_R
     else:
+      # 待機時は中央/右に現在値を置いておく
       self.rec1.set_data(Fzz, Fz)
       self.rec3.set_data(Fr, Ff)
-      return self.rec1,self.rec3, self.image_plt, self.line,self.line_M
+      return self.rec1, self.rec3, self.image_plt, self.line, self.line_M
 
-  # グラフを随時更新する関数
+  # グラフを随時更新する関数（クラス内に戻す！）
   def animation(self):
-    # アニメーションの定義
     self.ani = animation.FuncAnimation(self.fig,
                                        self.updateframe,
                                        interval=0,
                                        blit=True)
-    # グラフ内でのキー入力の受付
     self.cid = self.fig.canvas.mpl_connect('key_press_event', self.onkey)
     plt.tight_layout()
-
-    # グラフの表示(これがないとグラフは表示されない)
     plt.show()
 
 
