@@ -41,6 +41,9 @@ class data_loader(object):
     def __init__(self, name=None, Fz_range=10.0, dummy_flag=False, num_workers=8):
         self.dummy_flag = dummy_flag
         self.name = name
+
+        #学習させる画像の変更　rgb or g or hs
+        self.img_mode = img_mode
         # 垂直力の測定範囲に応じて正規化定数を変える
         if Fz_range == 5.0:
             self.normal_force_normalize = 5.0
@@ -95,7 +98,7 @@ class data_loader(object):
         # Xの正規化
         X = X.astype("float64")
         # (データ数,画像縦長さ,画像横長さ,色数)となるよう次元を調整
-        X = X.reshape((-1, 155, 140, 1))  # グレースケールなので色数1
+        X = X.reshape((-1, 155, 140, 3))  #３ｃｈ
 
         # 255で割って0~1.0の範囲にする
         X /= 255.0
@@ -123,13 +126,35 @@ class data_loader(object):
         return Y
 
 
-# 自作層(グレースケールをカラー画像にする)関数
-def tensor_gray2BGR(grayX):
-    blank = tf.zeros_like(grayX)
-    BGR_X = tf.concat([blank, grayX], axis=3)
-    BGR_X = tf.concat([BGR_X, blank], axis=3)
 
-    return BGR_X
+#画像をmode別に変換する関数
+def build_input_image(bgr_img, mode = "rgb"):
+    if mode == "rgb":
+        return bgr_img
+
+    if mode == "g":
+        g = bgr_img[:, :, 1]
+        out = np.zeros_like(bgr_img)
+        out[:, :, 1] = g
+        return out
+
+    if mode == "hs":
+        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+        H = hsv[:, :, 0]
+        S = hsv[:, :, 1]
+        out = np.zeros_like(bgr_img)
+        out[:, :, 2] = H
+        out[:, :, 1] = S
+        return out
+    raise ValueError(f"Unknown img_mode: {mode}")
+
+# # 自作層(グレースケールをカラー画像にする)関数
+# def tensor_gray2BGR(grayX):
+#     blank = tf.zeros_like(grayX)
+#     BGR_X = tf.concat([blank, grayX], axis=3)
+#     BGR_X = tf.concat([BGR_X, blank], axis=3)
+#
+#     return BGR_X
 
 
 class multitask_CNN(object):
@@ -170,20 +195,20 @@ class multitask_CNN(object):
         # 構築方法はFunctionAPI
         # 入力画像(画像縦サイズ、横サイズ、チャンネル数を指定)
         # 縦155pixel,横140pixelのグレースケール画像(チャンネル数1)を入力
-        input_tensor = Input(shape=(155, 140, 1), name="input_tensor")
+        input_tensor = Input(shape=(155, 140, 3), name="input_tensor")
 
         # VGG16の構造を読み込む(注:入力するのがカラー画像でないと学習済み重み値を利用できない)
         # VGG16で抽出した特徴量をFlattenで1次元化
         # グレースケール画像を赤、青要素0のカラー画像(チャンネル数3)に変換
-        conv_input = Lambda(tensor_gray2BGR,
-                            output_shape=(155, 140, 3),
-                            name="gray2BGR")(input_tensor)
-        conv_inputshape = (155, 140, 3)
+        # conv_input = Lambda(tensor_gray2BGR,
+        #                     output_shape=(155, 140, 3),
+        #                     name="gray2BGR")(input_tensor)
+        # conv_inputshape = (155, 140, 3)
 
         # VGG16を呼び出し(全結合層は含まない)
         conv = VGG16(weights="imagenet",
-                     input_shape=conv_inputshape,
-                     include_top=False)(conv_input)
+                     input_shape=(155 ,140 ,3),
+                     include_top=False)(input_tensor)
 
         # 畳み込み層の出力を1次元化
         flatten = GlobalMaxPooling2D(name="flatten")(conv)
@@ -400,8 +425,11 @@ class Trainer(object):
         # map用関数
         def path2img(path):
             print("\r", "now image loading", end="")
-            # パスから画像そのものを読み出してリストに格納
-            return cv2.imread(path, 0)
+            bgr = cv2.imread(path) #カラー読み込み
+            if bgr is None:
+                raise FileNotFoundError(f"image not found: {path}")
+            x = build_input_image(bgr, mode=self.datas.img_mode) #modeの反映
+            return x
 
         # データを読み出し
         index_list = list(index_array)
@@ -410,7 +438,7 @@ class Trainer(object):
 
         # np.arrayに変換
         X_array = np.array(X_img_list)
-        X_array = X_array.reshape(-1, 155, 140, 1)
+        # X_array = X_array.reshape(-1, 155, 140, 1)
         Y_array = datas_df.iloc[index_list, [1, 2, 3]].values
         return X_array, Y_array
 
@@ -562,6 +590,14 @@ class Trainer(object):
 if __name__ == "__main__":
     # Trueのとき少量のデータで学習
     #
+    modes = ["rgb", "g", "hs"]
+
+    for mode in modes:
+        CNN = multitask_CNN()
+        database = data_loader(name=now_name, Fz_range=10.0, dummy_flag=dummy_flag, img_mode=mode)
+        trainer = Trainer(CNN, database)
+        trainer.base_train()
+
     dummy_flag = False
     test_size = 0.15  # 用意したデータの何割を評価用に使うか
     split_seed = 111  # データランダム分割のシード値
