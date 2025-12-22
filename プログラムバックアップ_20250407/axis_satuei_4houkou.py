@@ -217,8 +217,8 @@ class SC800IM700_1:
     #(RR=0,PUD=1)にして200msec以上待つ
     self.write_byte_data(self.address, b'\x00', b'\x0E')
     time.sleep(1)
-    print(hex(self.read_byte_data(b'\x00')))
-    time.sleep(1)
+    # print(hex(self.read_byte_data(b'\x00')))
+    # time.sleep(1)
 
     #構成の設定
     self.write_byte_data(self.address, b'\x00', b'\xAE')
