@@ -44,9 +44,10 @@ def directry_initialize():
 
 #データを読み出すためのクラス
 class data_loader(object):
-    def __init__(self,name=None,Fz_range=10.0,dummy_flag=False,num_workers=8):
+    def __init__(self,name=None,Fz_range=10.0,dummy_flag=False,img_mode="g",num_workers=8):
         self.dummy_flag=dummy_flag
         self.name=name
+        self.img_mode = img_mode
         #垂直力の測定範囲に応じて正規化定数を変える
         if Fz_range==5.0:
             self.normal_force_normalize = 5.0
@@ -475,22 +476,29 @@ if __name__ == "__main__":
 
     #namelist = ["hamada","hanai","isogai","komura","mochiduki","sho","takeshige","tsuji","chen"]
     namelist = ["ifuku"]
+    modes = ["rgb", "g", "hs"]
     #ディレクトリ移動(共通の処理)
     directry_initialize()
 
     #一気に学習
     for now_name in namelist:
-        #モデル構築クラスの用意
-        CNN = multitask_CNN()
+        test_df = make_test_df(now_name)
+        for mode in modes:
+            model = load_model_for_mode(mode)
+            y_true, y_pred = validate(model, test_df, img_mode=mode)
+            save_results(y_true, y_pred, mode)
 
-        #データ読み出しクラスの用意
-        database=data_loader(name=now_name,Fz_range=10.0,dummy_flag=False)
-
-        #学習用クラスの用意
-        trainer = Trainer(CNN,database)
-
-        #学習の実施
-        trainer.base_train()
-        
-        #次の学習に備えてオブジェクトの消去
-        del CNN,database,trainer
+            # #モデル構築クラスの用意
+            # CNN = multitask_CNN()
+            #
+            # #データ読み出しクラスの用意
+            # database=data_loader(name=now_name,Fz_range=10.0,dummy_flag=False)
+            #
+            # #学習用クラスの用意
+            # trainer = Trainer(CNN,database)
+            #
+            # #学習の実施
+            # trainer.base_train()
+            #
+            # #次の学習に備えてオブジェクトの消去
+            # del CNN,database,trainer
