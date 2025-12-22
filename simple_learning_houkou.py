@@ -66,7 +66,7 @@ def build_input_image(bgr_img, mode="rgb"):
         S = hsv[:, :, 1]  # 0-255
         Z = np.zeros_like(H, dtype=np.uint8)
 
-        # 「RにH, GにS, Bは0」で学習したい、というあなたのルールを
+        # 「RにH, GにS, Bは0」で学習したい、というルールを
         # OpenCV配列の並び(B,G,R)に合わせて B=0, G=S, R=H にする
         bgr_like = cv2.merge([Z, S, H])  # (B,G,R)
         return bgr_like
