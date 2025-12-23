@@ -118,6 +118,10 @@ class data_loader(object):
                 now_rad = np.deg2rad(now_degree)  # せん断角度[radian]
 
                 csv_record.columns = ["path", "Fz", "Fr", "Ff"]
+
+                #Fzが大きすぎたら無視する(100N以上で無視）
+                csv_record = csv_record[pd.to_numeric(csv_record["Fz"], errors="coerce") <= 100].copy()
+
                 img_path = csv_record["path"]
                 Fz = csv_record["Fz"]
                 Fx = csv_record["Fr"]
@@ -156,13 +160,13 @@ class data_loader(object):
         return Y
 
 
-# 自作層(グレースケールをカラー画像にする)関数
-def tensor_gray2BGR(grayX):
-    blank = tf.zeros_like(grayX)
-    BGR_X = tf.concat([blank, grayX], axis=3)
-    BGR_X = tf.concat([BGR_X, blank], axis=3)
-
-    return BGR_X
+# # 自作層(グレースケールをカラー画像にする)関数
+# def tensor_gray2BGR(grayX):
+#     blank = tf.zeros_like(grayX)
+#     BGR_X = tf.concat([blank, grayX], axis=3)
+#     BGR_X = tf.concat([BGR_X, blank], axis=3)
+#
+#     return BGR_X
 
 
 class multitask_CNN(object):
