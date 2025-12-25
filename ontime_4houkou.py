@@ -17,6 +17,10 @@ from matplotlib.pyplot import MultipleLocator
 import csv
 from multiprocessing import Process,Value,Manager
 
+model_rgb = validation_VGG16.load_model_for_mode("rgb")
+model_g   = validation_VGG16.load_model_for_mode("g")
+model_hs  = validation_VGG16.load_model_for_mode("hs")
+
 gf2000 = axis_satuei_4houkou.gf2000
 SC800IM700_1 = axis_satuei_4houkou.SC800IM700_1
 SC800IM700_2 = axis_satuei_4houkou.SC800IM700_2
@@ -31,7 +35,7 @@ class RealTime:
         self.SC800IM700_2 = axis_satuei_4houkou.SC800IM700_2
         self.SC800IM700_3 = axis_satuei_4houkou.SC800IM700_3
         self.SC800IM700_4 = axis_satuei_4houkou.SC800IM700_4
-        self.CNN = validation_VGG16.multitask_CNN()
+
 
 
         self.roix, self.roiy = 260, 315  # 左上座標
@@ -71,173 +75,262 @@ class RealTime:
         Fy_Predict_list = []
         Fy_True_list = []
 
-        temp_list_Fz_Predict = []  # 临时存放y轴数据
-        temp_list_Fx_Predict = []  # 临时存放y轴数据
-        temp_list_Fy_Predict = []  # 临时存放y轴数据
-
 
         temp_list_Fz_True = []  # 临时存放y轴数据
         temp_list_Fx_True = []  # 临时存放y轴数据
         temp_list_Fy_True = []  # 临时存放y轴数据
 
+        pred = {
+            "rgb": {"Fz": [], "Fx": [], "Fy": []},
+            "g": {"Fz": [], "Fx": [], "Fy": []},
+            "hs": {"Fz": [], "Fx": [], "Fy": []},
+        }
+
         show_num = 100  # x轴显示的数据个数，例：show_num = 10表示x轴只显示10个数据
         num = 0
 
-        plt.ion()  # 打开交互模式
-        #fig1 = plt.figure(figsize=(100, 80))  # 设置图片大小
-        plt.xlim(0, show_num)  # 设置x轴的数值显示范围
-        plt.ylim(-10, 10)
-        #x_major_locator = MultipleLocator(100000)  # 把x轴的刻度间隔设置为2
-        #y_major_locator = MultipleLocator(10)  # 把y轴的刻度间隔设置为10
-        ax = plt.gca()  # ax为两条坐标轴的实例
-        #ax.xaxis.set_major_locator(x_major_locator)  # 把x轴的主刻度设置为2的倍数
-        #ax.yaxis.set_major_locator(y_major_locator)  # 把y轴的主刻度设置为10的倍数
+        # plt.ion()  # 打开交互模式
+        # #fig1 = plt.figure(figsize=(100, 80))  # 设置图片大小
+        # plt.xlim(0, show_num)  # 设置x轴的数值显示范围
+        # plt.ylim(-10, 10)
+        # #x_major_locator = MultipleLocator(100000)  # 把x轴的刻度间隔设置为2
+        # #y_major_locator = MultipleLocator(10)  # 把y轴的刻度间隔设置为10
+        # ax = plt.gca()  # ax为两条坐标轴的实例
+        # #ax.xaxis.set_major_locator(x_major_locator)  # 把x轴的主刻度设置为2的倍数
+        # #ax.yaxis.set_major_locator(y_major_locator)  # 把y轴的主刻度设置为10的倍数
+
+        plt.ion()
+
+        modes = ["rgb", "g", "hs"]
+        axes_names = ["Fz", "Fx", "Fy"]
+
+        fig, axs = plt.subplots(3, 3, figsize=(12, 8), sharex=True)
+
+        #title, label
+        for r, mode in enumerate(modes):
+            axs[r, 0].set_ylabel(mode)
+        for c, nm in enumerate(axes_names):
+            axs[0, c].set_title(nm)
+
+        #9枠それぞれに　True/Pred の「線」を１回だけ作る
+        lines = {}
+        for r, mode in enumerate(modes):
+            for c, nm in enumerate(axes_names):
+                l_true, = axs[r,c].plot([], [], ls=':') #True
+                l_pred, = axs[r,c].plot([], [], ls=':') #Pred
+                lines[(mode, nm, "true")] = l_true
+                lines[(mode, nm, "pred")] = l_pred
+                axs[r, c].grid(True)
+
+        fig.tight_layout()
 
         # --------メモリ共有変数-------------
-        header = ['Time', 'Fx_True','Fy_True', 'Fz_True', 'Fx_Predict', 'Fy_Predict', 'Fz_Predict', 'Fx_Error', 'Fy_Error', 'Fz_Error']
+        header = [
+            "Time",
+            "Fx_true", "Fy_true", "Fz_true",
+
+            "rgb_Fx_pred", "rgb_Fy_pred", "rgb_Fz_pred",
+            "g_Fx_pred", "g_Fy_pred", "g_Fz_pred",
+            "hs_Fx_pred", "hs_Fy_pred", "hs_Fz_pred",
+
+            "rgb_Fx_err", "rgb_Fy_err", "rgb_Fz_err",
+            "g_Fx_err", "g_Fy_err", "g_Fz_err",
+            "hs_Fx_err", "hs_Fy_err", "hs_Fz_err",
+        ]
         self.data_writing.writerow(header)
 
         star_time = time.perf_counter()
 
         # --------------------------------------------------------------------------------------------------------------------------------------------
+        try:
+            while True:
+                #センサ読み取り
+                Fz = normal_force.value / self.N2gf
+                Fr = shear_force1.value - shear_force3.value
+                Ff = shear_force2.value - shear_force4.value
 
-        while True:
-            # 荷重計の取った値[g]を[gf]として[N]に変換(ここ並列処理にすると40msec高速化)
-            Fz = normal_force.value / self.N2gf
-            Fr = shear_force1.value - shear_force3.value
-            Ff = shear_force2.value - shear_force4.value
+                #画像取得・ROI
+                ret, base = self.capture.read()
+                roi = base[self.roiy:self.roiy + self.h, self.roix:self.roix + self.w]
+                ret, base = self.capture.read()
+                if not ret:
+                    print("capture.read() failed")
+                    continue
 
-            ret, base = self.capture.read()
-            roi = base[self.roiy:self.roiy + self.h, self.roix:self.roix + self.w]
-            cv2.imshow("ROI", roi)#爪の画像も見たくて追加
-            img_blue_c1, img_green_c1, img_red_c1 = cv2.split(roi)
-            gray = img_green_c1
+                roi = base[self.roiy:self.roiy + self.h, self.roix:self.roix + self.w]
 
-            gau = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
-            clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
-            hist = clahe.apply(gau)
+                cv2.imshow("ROI", roi)
 
-            X_array = np.array(hist)
-            X_array = X_array.reshape(-1, 155, 140, 1)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("q -> break")
+                    break
 
-            X = X_array.astype("float64")
-            X = X.reshape((-1, 155, 140, 1))
+                # --- 3モード入力生成 ---
+                g = roi[:, :, 1]
+                gau = cv2.GaussianBlur(g, (5, 5), 0)
+                clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+                hist = clahe.apply(gau)
+                g3 = np.stack([hist, hist, hist], axis=2)  # (155,140,3)
+                X_g = g3.astype(np.float32).reshape(1, 155, 140, 3) / 255.0
 
-            X/= 255.0
+                rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+                X_rgb = rgb.astype(np.float32).reshape(1, 155, 140, 3) / 255.0
 
+                hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                H = hsv[:, :, 0];
+                S = hsv[:, :, 1];
+                Z = np.zeros_like(H)
+                hs3 = np.stack([H, S, Z], axis=2)
+                X_hs = hs3.astype(np.float32).reshape(1, 155, 140, 3) / 255.0
 
-            predict = self.CNN.model.predict(X)
+                # --- 3モデル推論 ---
+                pred_rgb_list = model_rgb.predict(X_rgb, verbose=0)
+                pred_g_list = model_g.predict(X_g, verbose=0)
+                pred_hs_list = model_hs.predict(X_hs, verbose=0)
 
-            predict = np.concatenate([predict[0],
-                                      predict[1],
-                                      predict[2]],
-                                      axis = 1)
+                pred_rgb = np.concatenate([pred_rgb_list[0], pred_rgb_list[1], pred_rgb_list[2]], axis=1)
+                pred_g = np.concatenate([pred_g_list[0], pred_g_list[1], pred_g_list[2]], axis=1)
+                pred_hs = np.concatenate([pred_hs_list[0], pred_hs_list[1], pred_hs_list[2]], axis=1)
 
-            predict = self.data_unnormalize(predict)
-            print(predict)
+                pred_rgb = self.data_unnormalize(pred_rgb)
+                pred_g = self.data_unnormalize(pred_g)
+                pred_hs = self.data_unnormalize(pred_hs)
 
-            #print("Fz=",Fz)
-            #print("Fr=",Fr)
-            # -----------------------------------
-            #Fz_True_list.append(Fz)
-            #temp_list_Fz_True.append(Fz)
+                # ---- スカラー化（CSV用）----
+                rgb_Fz = float(pred_rgb[:, 0]);
+                rgb_Fx = float(pred_rgb[:, 1]);
+                rgb_Fy = float(pred_rgb[:, 2])
+                g_Fz = float(pred_g[:, 0]);
+                g_Fx = float(pred_g[:, 1]);
+                g_Fy = float(pred_g[:, 2])
+                hs_Fz = float(pred_hs[:, 0]);
+                hs_Fx = float(pred_hs[:, 1]);
+                hs_Fy = float(pred_hs[:, 2])
 
+                Fx_true = float(Fr)
+                Fy_true = float(Ff)
+                Fz_true = float(Fz)
 
-            # -----------------------------------
-            #Fz_pred = (predict[:,0]*10000-10527)/7322
-            #Fx_pred = (predict[:,1]*10000-895)/2679
-            #Fy_pred = (predict[:,2]*10000-343)/2289
-            Fz_pred = (predict[:,0])
-            Fx_pred = (predict[:,1])
-            Fy_pred = (predict[:,2])
-            # -----------------------------------
-            Fz_true = Fz
-            Fx_true = Fr
-            Fy_true = Ff
-            # -----------------------------------
-            Fz_error = Fz_pred - Fz_true
-            Fx_error = Fx_pred - Fx_true
-            Fy_error = Fy_pred - Fy_true
-            # -----------------------------------
-            Fz_pred = str("".join([str(x)for x in Fz_pred]))
-            Fz_error = str("".join([str(x)for x in Fz_error]))
-
-            Fx_pred = str("".join([str(x)for x in Fx_pred]))
-            Fx_error = str("".join([str(x)for x in Fx_error]))
-
-            Fy_pred = str("".join([str(x)for x in Fy_pred]))
-            Fy_error = str("".join([str(x)for x in Fy_error]))
-
-            # -----------------------------------
-            Fz_Predict_list.append(predict[:, 0])
-            Fx_Predict_list.append(predict[:, 1])
-            Fy_Predict_list.append(predict[:, 2])
-
-            temp_list_Fz_Predict.append(predict[:, 0])
-            temp_list_Fx_Predict.append(predict[:, 1])
-            temp_list_Fy_Predict.append(predict[:, 2])
-
-            #Fz_Predict_list.append(predict[:, 0])
-            #Fx_Predict_list.append(predict[:, 1])
-            #Fy_Predict_list.append(predict[:, 2])
-
-            #temp_list_Fz_Predict.append(predict[:, 0])
-            #temp_list_Fx_Predict.append(predict[:, 1])
-            #temp_list_Fy_Predict.append(predict[:, 2])
-
-            temp_list_Fz_True.append(Fz_true)
-            temp_list_Fx_True.append(Fx_true)
-            temp_list_Fy_True.append(Fy_true)
-
-            end_time = time.perf_counter()
-            delta_time = end_time - star_time
-            #delta_time = time.strftime("%M:%S:%MS", time.localtime(time.time()))
-            time_list.append(delta_time)
-            temp_list_time.append(delta_time)
-
-            self.data_writing.writerow([delta_time, Fx_true, Fy_true, Fz_true, Fx_pred, Fy_pred, Fz_pred, Fx_error, Fy_error, Fz_error])
+                # ---- 誤差（mode別）----
+                rgb_Fx_err = rgb_Fx - Fx_true;
+                rgb_Fy_err = rgb_Fy - Fy_true;
+                rgb_Fz_err = rgb_Fz - Fz_true
+                g_Fx_err = g_Fx - Fx_true;
+                g_Fy_err = g_Fy - Fy_true;
+                g_Fz_err = g_Fz - Fz_true
+                hs_Fx_err = hs_Fx - Fx_true;
+                hs_Fy_err = hs_Fy - Fy_true;
+                hs_Fz_err = hs_Fz - Fz_true
 
 
-            if num > show_num:
-                temp_list_time.remove(temp_list_time[0])
+                # --- 真値 ---
+                temp_list_Fz_True.append(Fz_true)
+                temp_list_Fx_True.append(Fx_true)
+                temp_list_Fy_True.append(Fy_true)
 
-                temp_list_Fz_True.remove(temp_list_Fz_True[0])
-                temp_list_Fz_Predict.remove(temp_list_Fz_Predict[0])
+                # --- 予測保存（9本） ---
+                pred["rgb"]["Fz"].append(float(pred_rgb[:, 0]));
+                pred["rgb"]["Fx"].append(float(pred_rgb[:, 1]));
+                pred["rgb"]["Fy"].append(float(pred_rgb[:, 2]))
+                pred["g"]["Fz"].append(float(pred_g[:, 0]));
+                pred["g"]["Fx"].append(float(pred_g[:, 1]));
+                pred["g"]["Fy"].append(float(pred_g[:, 2]))
+                pred["hs"]["Fz"].append(float(pred_hs[:, 0]));
+                pred["hs"]["Fx"].append(float(pred_hs[:, 1]));
+                pred["hs"]["Fy"].append(float(pred_hs[:, 2]))
 
-                temp_list_Fx_True.remove(temp_list_Fx_True[0])
-                temp_list_Fx_Predict.remove(temp_list_Fx_Predict[0])
+                end_time = time.perf_counter()
+                delta_time = end_time - star_time
+                temp_list_time.append(delta_time)
 
-                temp_list_Fy_True.remove(temp_list_Fy_True[0])
-                temp_list_Fy_Predict.remove(temp_list_Fy_Predict[0])
+                self.data_writing.writerow([
+                    delta_time,
+                    Fx_true, Fy_true, Fz_true,
 
-                # plt.clf()
-                plt.cla()
-                # plt.close()
+                    rgb_Fx, rgb_Fy, rgb_Fz,
+                    g_Fx, g_Fy, g_Fz,
+                    hs_Fx, hs_Fy, hs_Fz,
 
-            plt.xticks([])
+                    rgb_Fx_err, rgb_Fy_err, rgb_Fz_err,
+                    g_Fx_err, g_Fy_err, g_Fz_err,
+                    hs_Fx_err, hs_Fy_err, hs_Fz_err,
+                ])
 
+                if num >= show_num:
+                    temp_list_time.pop(0)
 
+                    temp_list_Fz_True.pop(0)
+                    temp_list_Fx_True.pop(0)
+                    temp_list_Fy_True.pop(0)
 
-            #垂直方向
-            plt.figure(1)
-            plt.plot(temp_list_time, temp_list_Fz_True, c='b', ls=':')
-            plt.plot(temp_list_time, temp_list_Fz_Predict, c='g', ls=':')
+                    for m in ["rgb", "g", "hs"]:
+                        for a in ["Fz", "Fx", "Fy"]:
+                            pred[m][a].pop(0)
 
-            #左右方向
-            plt.figure(2)
-            plt.plot(temp_list_time, temp_list_Fx_True, c='b', ls=':')
-            plt.plot(temp_list_time, temp_list_Fx_Predict, c='g', ls=':')
-            #前後方向
-            plt.figure(3)
-            plt.plot(temp_list_time, temp_list_Fy_True, c='b', ls=':')
-            plt.plot(temp_list_time, temp_list_Fy_Predict, c='g', ls=':')
+                # x軸
+                t = temp_list_time
 
-            plt.pause(0.01)
-            print(temp_list_time)
-            num += 1
+                for r, mode in enumerate(["rgb", "g", "hs"]):
+                    lines[(mode, "Fz", "true")].set_data(t, temp_list_Fz_True)
+                    lines[(mode, "Fz", "pred")].set_data(t, pred[mode]["Fz"])
 
-            # plt.ioff()  # 关闭交互模式
-            #plt.show()
+                    lines[(mode, "Fx", "true")].set_data(t, temp_list_Fx_True)
+                    lines[(mode, "Fx", "pred")].set_data(t, pred[mode]["Fx"])
+
+                    lines[(mode, "Fy", "true")].set_data(t, temp_list_Fy_True)
+                    lines[(mode, "Fy", "pred")].set_data(t, pred[mode]["Fy"])
+
+                # 軸調整
+                if len(t) >= 2:
+                    xmin, xmax = t[0], t[-1]
+                    for r, mode in enumerate(["rgb", "g", "hs"]):
+                        for c, axis in enumerate(["Fz", "Fx", "Fy"]):
+                            a = axs[r, c]
+                            a.set_xlim(xmin, xmax)
+
+                            ys = []
+                            ys += list(lines[(mode, axis, "true")].get_ydata())
+                            ys += list(lines[(mode, axis, "pred")].get_ydata())
+
+                            if ys:
+                                y_min, y_max = min(ys), max(ys)
+                                if y_min == y_max:
+                                    y_min -= 1
+                                    y_max += 1
+                                pad = 0.1 * (y_max - y_min)
+                                a.set_ylim(y_min - pad, y_max + pad)
+
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
+
+                print(temp_list_time)
+                num += 1
+
+        finally:
+            # 1) カメラ解放
+            if hasattr(self, "capture") and self.capture is not None:
+                self.capture.release()
+
+            # 2) OpenCVウィンドウ破棄
+            cv2.destroyAllWindows()
+
+            # 3) CSVをフラッシュしてクローズ
+            try:
+                self.data_csv.flush()
+                self.data_csv.close()
+            except Exception:
+                pass
+
+            # 4) Matplotlibも閉じる（任意）
+            try:
+                plt.ioff()
+                plt.close(fig)
+            except Exception:
+                pass
+
+            print("clean shutdown done.")
 
     def data_unnormalize(self, Y):
         #垂直力を戻す
@@ -291,7 +384,7 @@ if __name__ == "__main__":
     shear_loadcell_4.sub_ready()  # サブプロセスの準備
 
     # 荷重計測定準備
-    z_port = "COM13"
+    z_port = "COM14"
     normal_loadcell = gf2000(z_port)
     normal_loadcell.sub_ready()
 

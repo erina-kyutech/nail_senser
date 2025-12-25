@@ -34,6 +34,26 @@ import pandas as pd
 import h5py
 import smtplib
 
+#モデルのパスをmodeで切り替え
+# validation_VGG16.py の上の方に追加（パスは自分の実ファイル名に合わせて編集）
+MODEL_FILES = {
+    "g": {
+        "json": "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_g/for0-10.json",
+        "h5":   "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_g/weight/weight_ifuku_for0-10.h5",
+        "input_shape": (155, 140, 1),
+    },
+    "rgb": {
+        "json": "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_rgb/for0-10.json",
+        "h5":   "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_rgb/weight/weight_ifuku_for0-10.h5",
+        "input_shape": (155, 140, 3),
+    },
+    "hs": {
+        "json": "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_hs/for0-10.json",
+        "h5":   "C:/Users/Owner/PycharmProjects/result/CNN_result/vgg16_hs/weight/weight_ifuku_for0-10.h5",
+        "input_shape": (155, 140, 3),
+    },
+}
+
 #ディレクトリの移動
 #データセットのあるフォルダや結果を保存するフォルダへアクセスするために
 #ソースコードのあるフォルダから1つ上のディレクトリへ移動
@@ -41,6 +61,19 @@ def directry_initialize():
     nowdir = os.path.dirname(__file__)  #プログラムのあるディレクトリを参照
     os.chdir(nowdir)  #作業ディレクトリをプログラムのあるディレクトリに
     os.chdir("..")#一つ上のディレクトリに移動
+
+def load_model_for_mode(mode):
+    if mode not in MODEL_FILES:
+        raise ValueError(f"unknown mode: {mode}")
+
+    json_path = MODEL_FILES[mode]["json"]
+    weight_path = MODEL_FILES[mode]["h5"]
+
+    with open(json_path, "r") as f:
+        model = model_from_json(f.read(), custom_objects={'tf': tf, 'K': K})
+
+    model.load_weights(weight_path)
+    return model
 
 #データを読み出すためのクラス
 class data_loader(object):
