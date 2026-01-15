@@ -1,9 +1,9 @@
 import cv2
-
-for i in range(10):
-    cap = cv2.VideoCapture(i)
+# カメラのインデックス番号を確認する
+for index in range(5):  # 0から4までのインデックスを試す
+    cap = cv2.VideoCapture(index)
     if cap.isOpened():
-        print(f"カメラ {i} は使用可能です")
+        print(f"カメラが見つかりました: インデックス {index}")
         cap.release()
     else:
-        print(f"カメラ {i} は使えません")
+        print(f"カメラが見つかりませんでした: インデックス {index}")
