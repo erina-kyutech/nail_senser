@@ -1446,7 +1446,7 @@ class graphmake:
     self.CAM_NAIL = 0
     self.CAM_TIP = 1
 
-    # ★最終入力サイズ（150×290）
+    # ★最終入力サイズ（170×290）
     self.OUT_H = 150
 
     # ★表示比（左=爪, 右=指先）
@@ -1463,7 +1463,7 @@ class graphmake:
     self.n_cx, self.n_cy = 499, 250
     self.n_w, self.n_h = 282, 409
     # Tip（指先カメラ）
-    self.t_cx, self.t_cy = 324, 412
+    self.t_cx, self.t_cy = 324, 550
     self.t_w, self.t_h = 182, 136
 
     # ★ ROIを少し広げる（見切れ対策）
