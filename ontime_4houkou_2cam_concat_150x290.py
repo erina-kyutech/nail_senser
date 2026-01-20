@@ -44,6 +44,41 @@ MODEL_DIRS = {
 }
 # -----------------------------------------------------------------------------
 
+def crop_with_center_wh_safe(img, cx, cy, w, h):
+    H, W = img.shape[:2]
+
+    w = int(max(1, min(w, W)))
+    h = int(max(1, min(h, H)))
+
+    cx = int(max(w // 2, min(cx, W - w // 2)))
+    cy = int(max(h // 2, min(cy, H - h // 2)))
+
+    x1 = int(cx - w / 2)
+    y1 = int(cy - h / 2)
+    x2 = x1 + w
+    y2 = y1 + h
+
+    return img[y1:y2, x1:x2], (x1, y1, w, h)
+
+def _resize_no_pad_center_crop(img, out_w, out_h):
+    h, w = img.shape[:2]
+    if h == 0 or w == 0:
+        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+    target = out_w / out_h
+    cur = w / h
+
+    if cur > target:
+        new_w = int(h * target)
+        x0 = (w - new_w) // 2
+        cropped = img[:, x0:x0 + new_w]
+    else:
+        new_h = int(w / target)
+        y0 = (h - new_h) // 2
+        cropped = img[y0:y0 + new_h, :]
+
+    interp = cv2.INTER_AREA if (cropped.shape[0] > out_h or cropped.shape[1] > out_w) else cv2.INTER_LINEAR
+    return cv2.resize(cropped, (out_w, out_h), interpolation=interp)
 
 def load_trained_model(model_dir: str, subject_name: str):
     model_json_path = os.path.join(model_dir, "for0-10.json")
@@ -80,17 +115,19 @@ def _roi_from_center(cx: int, cy: int, w: int, h: int, w_scale: float, h_scale: 
 
 
 def make_concat_bgr(img_left_bgr, img_right_bgr):
-    x1, y1, w1, h1 = _roi_from_center(N_CX, N_CY, N_W0, N_H0, N_W_SCALE, N_H_SCALE, img_left_bgr.shape)
-    x2, y2, w2, h2 = _roi_from_center(T_CX, T_CY, T_W0, T_H0, T_W_SCALE, T_H_SCALE, img_right_bgr.shape)
+    n_w = int(N_W0 * N_W_SCALE)
+    n_h = int(N_H0 * N_H_SCALE)
+    t_w = int(T_W0 * T_W_SCALE)
+    t_h = int(T_H0 * T_H_SCALE)
 
-    roi_l = img_left_bgr[y1:y1 + h1, x1:x1 + w1]
-    roi_r = img_right_bgr[y2:y2 + h2, x2:x2 + w2]
+    roi_l, rect_l = crop_with_center_wh_safe(img_left_bgr,  N_CX, N_CY, n_w, n_h)
+    roi_r, rect_r = crop_with_center_wh_safe(img_right_bgr, T_CX, T_CY, t_w, t_h)
 
-    roi_l = cv2.resize(roi_l, (OUT_W_LEFT, OUT_H), interpolation=cv2.INTER_AREA)
-    roi_r = cv2.resize(roi_r, (OUT_W_RIGHT, OUT_H), interpolation=cv2.INTER_AREA)
+    # ★ 撮影と同じ整形（歪みゼロ）
+    roi_l = _resize_no_pad_center_crop(roi_l, OUT_W_LEFT, OUT_H)
+    roi_r = _resize_no_pad_center_crop(roi_r, OUT_W_RIGHT, OUT_H)
 
-    return cv2.hconcat([roi_l, roi_r])  # (150,290,3)
-
+    return cv2.hconcat([roi_l, roi_r])
 
 def preprocess_for_mode(concat_bgr, mode: str):
     if mode == "rgb":
@@ -263,16 +300,6 @@ class RealTime:
                             0.9, (0, 255, 0), 2)
 
                 cv2.imshow("concat", concat_bgr)
-
-                # ---- FPS calculation ----
-                now_fps_time = time.perf_counter()
-                dt = now_fps_time - self.prev_time
-                self.prev_time = now_fps_time
-
-                if dt > 0:
-                    fps_inst = 1.0 / dt
-                    # 指数移動平均で安定化
-                    self.fps_ema = (1 - self.fps_alpha) * self.fps_ema + self.fps_alpha * fps_inst
 
                 # ---- time ----
                 now = time.perf_counter()
