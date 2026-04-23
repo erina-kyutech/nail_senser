@@ -101,7 +101,7 @@ class data_loader(object):
     def data_normalize(self,X,Y):
 
         #Xの正規化
-        X = X.astype("float64")
+        X = X.astype("float32")
         #(データ数,画像縦長さ,画像横長さ,色数)となるよう次元を調整
         # reshape depending on mode
         if self.img_mode == "g":
@@ -157,6 +157,28 @@ class multitask_CNN(object):
 
         #モデルを構築
         self.CNN_build()
+
+    def load_from_dir(self, model_dir, subject="ifuku"):
+        """
+        model_dir例:
+          r"C:\Users\Owner\PycharmProjects\result\CNN_result\vgg16_rgb_concat_150x290\"
+        """
+        self.model_dir = model_dir if model_dir.endswith(os.sep) else model_dir + os.sep
+
+        json_path = os.path.join(self.model_dir, "for0-10.json")
+        weight_path = os.path.join(self.model_dir, "weight", f"weight_{subject}_for0-10.h5")
+
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"json not found: {json_path}")
+        if not os.path.exists(weight_path):
+            raise FileNotFoundError(f"weight not found: {weight_path}")
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            model_json_string = f.read()
+
+        self.model = model_from_json(model_json_string, custom_objects={"tf": tf, "K": K})
+        self.model.load_weights(weight_path)
+        return self.model
 
     #モデルの構築
     def CNN_build(self):
@@ -246,28 +268,21 @@ class multitask_CNN(object):
             
         #モデルを構成
         self.model = Model(input_tensor,predicts)
-        model_json_path =  self.model_dir + "for0-10.json"
-        model_json_string = open(model_json_path).read()
 
-        #モデル構造の読み込み
-        self.model = model_from_json(model_json_string,
-                                     custom_objects={'tf': tf,'K': K})
-        model_weight_path = self.model_dir+"weight/weight_ifuku_for0-10.h5"
-        self.model.load_weights(model_weight_path)
 
     #モデル構造と重みを読み込み
-    def model_load_from_path(self):
-        model_json_path =  self.model_dir + "for0-10.json"
-        model_json_string = open(model_json_path).read()
+    def model_load_from_path(self, subject="ifuku"):
+        json_path = os.path.join(self.model_dir, "for0-10.json")
+        weight_path = os.path.join(self.model_dir, "weight", f"weight_{subject}_for0-10.h5")
 
-        #モデル構造の読み込み
-        self.model = model_from_json(model_json_string,
-                                     custom_objects={'tf': tf,'K': K})
+        with open(json_path, "r", encoding="utf-8") as f:
+            model_json_string = f.read()
+
+        self.model = model_from_json(model_json_string, custom_objects={"tf": tf, "K": K})
+        self.model.load_weights(weight_path)
+        return self.model
 
 
-        #モデル重みの読み込み
-        model_weight_path = self.model_dir+"/weight/weight_for0-10.h5"
-        self.model.load_weights(model_weight_path)
 #実際に学習に使うクラス
 #引数にCNNクラス、データ読み出しクラスをとる
 class Trainer(object):
@@ -500,7 +515,57 @@ class Trainer(object):
         eval_log_df = eval_log_df.transpose()
 
         #DataFrameをcsv形式で保存
-        eval_log_df.to_csv(eval_log_path,encoding="shift-jis")    
+        eval_log_df.to_csv(eval_log_path,encoding="shift-jis")
+
+    # ============================
+    # Real-time用：3モデル同時ロード
+    # ============================
+def load_model_for_mode(mode: str, subject: str = "ifuku", base_dir: str = None):
+    """
+    mode: "rgb" / "g" / "hs"
+    期待フォルダ（例）:
+      C:\\Users\\Owner\\PycharmProjects\\result\\CNN_result\\vgg16_rgb_concat_150x290\\for0-10.json
+      C:\\Users\\Owner\\PycharmProjects\\result\\CNN_result\\vgg16_rgb_concat_150x290\\weight\\weight_ifuku_for0-10.h5
+    """
+    mode = mode.lower().strip()
+    if mode not in ("rgb", "g", "hs"):
+        raise ValueError(f"mode must be one of rgb/g/hs, got: {mode}")
+
+    if base_dir is None:
+        base_dir = r"C:\Users\Owner\PycharmProjects\result\CNN_result"
+
+    folder_map = {
+        "rgb": "vgg16_rgb_concat_150x290",
+        "g": "vgg16_g_concat_150x290",
+        "hs": "vgg16_hs_concat_150x290",
+    }
+
+    model_dir = os.path.join(base_dir, folder_map[mode])
+    json_path = os.path.join(model_dir, "for0-10.json")
+    weight_path = os.path.join(model_dir, "weight", f"weight_{subject}_for0-10.h5")
+
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"json not found: {json_path}")
+    if not os.path.exists(weight_path):
+        raise FileNotFoundError(f"weight not found: {weight_path}")
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        model_json_string = f.read()
+
+    model = model_from_json(model_json_string, custom_objects={"tf": tf, "K": K})
+    model.load_weights(weight_path)
+    return model
+
+def load_models_all(subject: str = "ifuku", base_dir: str = None):
+    """
+    rgb/g/hs をまとめて返す
+    """
+    return {
+        "rgb": load_model_for_mode("rgb", subject=subject, base_dir=base_dir),
+        "g": load_model_for_mode("g", subject=subject, base_dir=base_dir),
+        "hs": load_model_for_mode("hs", subject=subject, base_dir=base_dir),
+    }
+
 
 if __name__ == "__main__":
     # ===== settings =====

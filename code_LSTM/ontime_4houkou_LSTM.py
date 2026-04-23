@@ -1,0 +1,308 @@
+from matplotlib import animation
+
+import validation_LSTM
+import axis_satuei_4houkou_2
+import cv2
+import matplotlib.pylab as plt
+import time
+import numpy as np
+import pandas as pd
+import math
+
+# 2024/11/13 にデータを追加
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+import random
+from matplotlib.pyplot import MultipleLocator
+import csv
+from multiprocessing import Process, Value, Manager
+
+import datetime  # ★ ontime_4houkou.py にあったがimportが無かったので追加（self.nowで使う）
+
+gf2000 = axis_satuei_4houkou_2.gf2000
+SC800IM700_1 = axis_satuei_4houkou_2.SC800IM700_1
+SC800IM700_2 = axis_satuei_4houkou_2.SC800IM700_2
+SC800IM700_3 = axis_satuei_4houkou_2.SC800IM700_3
+SC800IM700_4 = axis_satuei_4houkou_2.SC800IM700_4
+
+
+class RealTime:
+
+    def __init__(self):
+        self.gf2000 = axis_satuei_4houkou_2.gf2000
+        self.SC800IM700_1 = axis_satuei_4houkou_2.SC800IM700_1
+        self.SC800IM700_2 = axis_satuei_4houkou_2.SC800IM700_2
+        self.SC800IM700_3 = axis_satuei_4houkou_2.SC800IM700_3
+        self.SC800IM700_4 = axis_satuei_4houkou_2.SC800IM700_4
+
+        # ★ LSTM版モデル読み込み（validation_LSTM）
+        # validation_LSTM.multitask_CNN が name 必須の実装の可能性があるため互換対応
+        # まず引数なしで試し、ダメなら name="ryusetsu2" を渡す
+        try:
+            self.CNN = validation_LSTM.multitask_CNN()
+        except TypeError:
+            # あなたの重みファイル名が weight_ryusetsu2_for0-10_reshape.h5 なので、ここは ryusetsu2 固定
+            self.CNN = validation_LSTM.multitask_CNN(name="ryusetsu2")
+
+        self.roix, self.roiy = 260, 165  # 左上座標
+        self.w, self.h = 140, 155  # 幅,高さ
+
+        self.capture = cv2.VideoCapture(0)
+        if self.capture.isOpened() is False:
+            raise ("IO Error")
+
+        self.normal_force_normalize = 10.0
+        self.thear_force_normalize = 5.0
+        self.angle_normalize = 90
+
+        self.N2gf = 101.972
+
+        self.datalog_path = "./datalog_fr.csv"
+        self.data_csv = open(self.datalog_path, "w", newline="")
+        self.data_writing = csv.writer(self.data_csv)
+
+        print("-180~180の範囲で剪断方向角度を入力してください(例:-45)")
+        self.degree_str = input()
+        self.theta = math.radians(int(self.degree_str))  # 角度のラジアン,剪断力の分解に利用
+
+        self.now = datetime.datetime.now()
+
+    def graph(self):
+        time_list = []  # 横軸データの保存に使用されます
+        temp_list_time = []  # 横軸データを一時的に保存
+
+        Fz_Predict_list = []
+        Fz_True_list = []
+
+        Fx_Predict_list = []
+        Fx_True_list = []
+
+        Fy_Predict_list = []
+        Fy_True_list = []
+
+        temp_list_Fz_Predict = []  # 縦軸データを一時保存
+        temp_list_Fx_Predict = []  # 縦軸データを一時保存
+        temp_list_Fy_Predict = []  # 縦軸データを一時保存
+
+        temp_list_Fz_True = []  # 縦軸データを一時保存
+        temp_list_Fx_True = []  # 縦軸データを一時保存
+        temp_list_Fy_True = []  # 縦軸データを一時保存
+
+        show_num = 100  # 横軸に表示されるデータの数
+        num = 0
+
+        plt.ion()  # インタラクティブモードをオンにする
+        plt.xlim(0, show_num)
+        plt.ylim(-10, 10)
+        ax = plt.gca()
+
+        # --------メモリ共有変数-------------
+        header = ['Time', 'Fx_True', 'Fy_True', 'Fz_True',
+                  'Fx_Predict', 'Fy_Predict', 'Fz_Predict',
+                  'Fx_Error', 'Fy_Error', 'Fz_Error']
+        self.data_writing.writerow(header)
+
+        star_time = time.perf_counter()
+
+        while True:
+            # 荷重計の取った値[g]を[gf]として[N]に変換
+            Fz = normal_force.value / self.N2gf
+            Fr = shear_force1.value - shear_force3.value
+            Ff = shear_force2.value - shear_force4.value
+
+            ret, base = self.capture.read()
+            roi = base[self.roiy:self.roiy + self.h, self.roix:self.roix + self.w]
+            img_blue_c1, img_green_c1, img_red_c1 = cv2.split(roi)
+            gray = img_green_c1
+
+            gau = cv2.GaussianBlur(gray, ksize=(5, 5), sigmaX=0)
+            clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+            hist = clahe.apply(gau)
+
+            X_array = np.array(hist)
+            X_array = X_array.reshape(-1, 155, 140, 1)
+
+            X = X_array.astype("float64")
+            X = X.reshape((-1, 155, 140, 1))
+
+            X /= 255.0
+
+            # ★ 予測（LSTM版モデルでもここは同じ）
+            predict_list = self.CNN.model.predict(X)
+
+            # validation_VGG16 は [Fz, Fx, Fy, Angle] の可能性がある一方、
+            # LSTM版は [Fz, Fx, Fy] だけの可能性があるため、先頭3つだけを結合する。
+            if isinstance(predict_list, (list, tuple)) and len(predict_list) >= 3:
+                predict = np.concatenate([predict_list[0],
+                                          predict_list[1],
+                                          predict_list[2]],
+                                         axis=1)
+            else:
+                # 万一 predict_list が配列で返ってきた場合（想定外）でも落ちないようにする
+                predict = np.array(predict_list)
+
+            predict = self.data_unnormalize(predict)
+            print(predict)
+
+            # -----------------------------------
+            Fz_pred = (predict[:, 0])
+            Fx_pred = (predict[:, 1])
+            Fy_pred = (predict[:, 2])
+            # -----------------------------------
+            Fz_true = Fz
+            Fx_true = Fr
+            Fy_true = Ff
+            # -----------------------------------
+            Fz_error = Fz_pred - Fz_true
+            Fx_error = Fx_pred - Fx_true
+            Fy_error = Fy_pred - Fy_true
+            # -----------------------------------
+            Fz_pred = str("".join([str(x) for x in Fz_pred]))
+            Fz_error = str("".join([str(x) for x in Fz_error]))
+
+            Fx_pred = str("".join([str(x) for x in Fx_pred]))
+            Fx_error = str("".join([str(x) for x in Fx_error]))
+
+            Fy_pred = str("".join([str(x) for x in Fy_pred]))
+            Fy_error = str("".join([str(x) for x in Fy_error]))
+
+            # -----------------------------------
+            Fz_Predict_list.append(predict[:, 0])
+            Fx_Predict_list.append(predict[:, 1])
+            Fy_Predict_list.append(predict[:, 2])
+
+            temp_list_Fz_Predict.append(predict[:, 0])
+            temp_list_Fx_Predict.append(predict[:, 1])
+            temp_list_Fy_Predict.append(predict[:, 2])
+
+            temp_list_Fz_True.append(Fz_true)
+            temp_list_Fx_True.append(Fx_true)
+            temp_list_Fy_True.append(Fy_true)
+
+            end_time = time.perf_counter()
+            delta_time = end_time - star_time
+            time_list.append(delta_time)
+            temp_list_time.append(delta_time)
+
+            self.data_writing.writerow([delta_time, Fx_true, Fy_true, Fz_true,
+                                        Fx_pred, Fy_pred, Fz_pred,
+                                        Fx_error, Fy_error, Fz_error])
+
+            if num > show_num:
+                temp_list_time.remove(temp_list_time[0])
+
+                temp_list_Fz_True.remove(temp_list_Fz_True[0])
+                temp_list_Fz_Predict.remove(temp_list_Fz_Predict[0])
+
+                temp_list_Fx_True.remove(temp_list_Fx_True[0])
+                temp_list_Fx_Predict.remove(temp_list_Fx_Predict[0])
+
+                temp_list_Fy_True.remove(temp_list_Fy_True[0])
+                temp_list_Fy_Predict.remove(temp_list_Fy_Predict[0])
+
+                plt.cla()
+
+            plt.xticks([])
+
+            # 垂直方向
+            plt.rcParams["font.size"] = 25
+
+            plt.plot(temp_list_time, temp_list_Fz_True, c='b', ls='-', linewidth=3)
+            plt.plot(temp_list_time, temp_list_Fz_Predict, c='g', ls='-', linewidth=3)
+            plt.ylim(0, 8)
+
+            plt.pause(0.01)
+            print(temp_list_time)
+            num += 1
+
+    def data_unnormalize(self, Y):
+        # 垂直力を戻す
+        Y[:, 0] *= self.normal_force_normalize
+        # せんだん力の正規化
+        Y[:, 1] *= (self.thear_force_normalize * 2)
+        Y[:, 2] *= (self.thear_force_normalize * 2)
+        Y[:, 1] -= self.thear_force_normalize
+        Y[:, 2] -= self.thear_force_normalize
+
+        return Y
+
+
+if __name__ == "__main__":
+    # --------メモリ共有変数-------------
+    normal_force = Value('f', 0.00)
+    shear_force1 = Value('f', 0.00)
+    shear_force2 = Value('f', 0.00)
+    shear_force3 = Value('f', 0.00)
+    shear_force4 = Value('f', 0.00)
+    ser_flag = Value('b', True)  # シリアル通信フラグ(Trueで荷重計，MD共にループ開始)
+    rec_flag = Value('b', False)  # 測定フラグ(これがTrueの間測定)
+
+    # -----------------------------------
+
+    # ロードセル測定準備
+    xy_port_1 = "COM6"
+    xy_address_1 = 0x2A
+    shear_loadcell_1 = SC800IM700_1(xy_port_1, xy_address_1)  # クラスの定義
+    shear_loadcell_1.power_on()  # ロードセルの通信開始
+    shear_loadcell_1.sub_ready()  # サブプロセスの準備
+
+    # ロードセル測定準備
+    xy_port_2 = "COM7"
+    xy_address_2 = 0x2A
+    shear_loadcell_2 = SC800IM700_2(xy_port_2, xy_address_2)  # クラスの定義
+    shear_loadcell_2.power_on()  # ロードセルの通信開始
+    shear_loadcell_2.sub_ready()  # サブプロセスの準備
+
+    # ロードセル測定準備
+    xy_port_3 = "COM10"
+    xy_address_3 = 0x2A
+    shear_loadcell_3 = SC800IM700_3(xy_port_3, xy_address_3)  # クラスの定義
+    shear_loadcell_3.power_on()  # ロードセルの通信開始
+    shear_loadcell_3.sub_ready()  # サブプロセスの準備
+
+    # ロードセル測定準備
+    xy_port_4 = "COM9"
+    xy_address_4 = 0x2A
+    shear_loadcell_4 = SC800IM700_4(xy_port_4, xy_address_4)  # クラスの定義
+    shear_loadcell_4.power_on()  # ロードセルの通信開始
+    shear_loadcell_4.sub_ready()  # サブプロセスの準備
+
+    # 荷重計測定準備
+    z_port = "COM11"
+    normal_loadcell = gf2000(z_port)
+    normal_loadcell.sub_ready()
+
+    """
+    サブプロセス開始(各種通信)
+    並列処理したい関数がクラス内の関数(メソッド)の場合エラーが起きる
+    その場合，メソッドをクラスメソッドとして定義してやると動かせる
+    """
+    sub_z = Process(target=gf2000.sub_loop, args=[z_port, ser_flag, normal_force])
+    sub_z.start()
+    count1 = Value('i', 0)
+    count2 = Value('i', 0)
+    count3 = Value('i', 0)
+    count4 = Value('i', 0)
+
+    # せん断力計測プロセスの定義
+    sub_xy1 = Process(target=SC800IM700_1.sub_loop,
+                      args=[xy_port_1, xy_address_1, ser_flag, shear_force1, count1])
+    sub_xy2 = Process(target=SC800IM700_2.sub_loop,
+                      args=[xy_port_2, xy_address_2, ser_flag, shear_force2, count2])
+    sub_xy3 = Process(target=SC800IM700_3.sub_loop,
+                      args=[xy_port_3, xy_address_3, ser_flag, shear_force3, count3])
+    sub_xy4 = Process(target=SC800IM700_4.sub_loop,
+                      args=[xy_port_4, xy_address_4, ser_flag, shear_force4, count4])
+
+    # せん断力計測プロセスの開始
+    sub_xy1.start()
+    sub_xy2.start()
+    sub_xy3.start()
+    sub_xy4.start()
+
+    RealTime().graph()
+
+# -----------------------------------
+
+

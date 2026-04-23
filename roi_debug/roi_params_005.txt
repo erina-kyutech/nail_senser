@@ -1,0 +1,7 @@
+NAIL_IMG_PATH=nail_sample.jpg
+TIP_IMG_PATH=tip_sample.jpg
+Nail cx,cy,w,h = 965,903,379,375
+Tip  cx,cy,w,h = 1528,646,692,1080
+Nail rect = (775, 715, 1154, 1080)
+Tip  rect  = (1182, 106, 1874, 1080)
+OUT_H=155, OUT_W_HALF=70, DO_CONCAT=True
