@@ -196,8 +196,15 @@ def main():
         force_info = load_force_from_datalog(datalog_df, image_index)
         rgb_img, x = load_input_rgb(image_path)
 
-        preds = model(x, training=False)
-        preds_np = [float(p.numpy()[0, 0]) for p in preds]
+        y_list = model(x, training=False)
+        y = np.concatenate([y_list[0].numpy(), y_list[1].numpy(), y_list[2].numpy()], axis=1)
+
+        # 逆正規化
+        y[:, 0] *= 10.0
+        y[:, 1] = y[:, 1] * 10.0 - 5.0
+        y[:, 2] = y[:, 2] * 10.0 - 5.0
+
+        pred_Fz, pred_Fx, pred_Fy = y[0, 0], y[0, 1], y[0, 2]
 
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         image_subdir = os.path.join(OUTPUT_DIR, f"img_{base_name}")
@@ -213,9 +220,9 @@ def main():
             "true_Fz": force_info["Fz_true"],
             "true_Fr": force_info["Fr_true"],
             "true_Ff": force_info["Ff_true"],
-            "pred_Fz": preds_np[0],
-            "pred_Fx": preds_np[1],
-            "pred_Fy": preds_np[2],
+            "pred_Fz": pred_Fz,
+            "pred_Fx": pred_Fx,
+            "pred_Fy": pred_Fy,
         })
 
         for target_name in TARGETS:
@@ -238,9 +245,9 @@ def main():
                 "true_Fz": force_info["Fz_true"],
                 "true_Fr": force_info["Fr_true"],
                 "true_Ff": force_info["Ff_true"],
-                "pred_Fz": preds_np[0],
-                "pred_Fx": preds_np[1],
-                "pred_Fy": preds_np[2],
+                "pred_Fz": pred_Fz,
+                "pred_Fx": pred_Fx,
+                "pred_Fy": pred_Fy,
                 "left_ratio": left_ratio,
                 "right_ratio": right_ratio,
                 "original_path": original_path,
