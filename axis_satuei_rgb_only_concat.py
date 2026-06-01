@@ -365,7 +365,14 @@ class GraphMake:
 
         self.fig = plt.figure(figsize=(15, 6))
         self.fig.subplots_adjust(wspace=0.5)
-        plt.get_current_fig_manager().window.wm_geometry('+20+50')
+        manager = plt.get_current_fig_manager()
+        try:
+            manager.window.wm_geometry('+20+50') #Tk用
+        except AttributeError:
+            try:
+                manager.windoe.setGeometry(20, 50, 1500, 600) #Qt用
+            except AttributeError:
+                pass
         gs = GridSpec(1, 5)
 
         label_fontsize = 16
