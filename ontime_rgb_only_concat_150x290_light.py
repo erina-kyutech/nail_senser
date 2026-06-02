@@ -43,7 +43,7 @@ MODEL_DIRS = {
 
 # 軽量化用
 PLOT_EVERY_N_FRAMES = 5      # グラフ更新は5フレームに1回
-SHOW_NUM = 60                # 履歴を少し短く
+SHOW_SEC = 10.0                # 履歴を少し短く
 # -----------------------------------------------------------------------------
 
 def crop_with_center_wh_safe(img, cx, cy, w, h):
@@ -187,7 +187,7 @@ class RealTime:
         self.axes = np.expand_dims(self.axes, axis=0)
 
         # history buffers
-        self.show_num = SHOW_NUM
+        self.show_sec = SHOW_SEC
         self.plot_counter = 0
         self.hist_time = []
         self.hist_true = {k: [] for k in self.force_names}
@@ -228,7 +228,9 @@ class RealTime:
         if len(self.hist_time) < 2:
             return
 
-        t0, t1 = self.hist_time[0], self.hist_time[-1]
+        t1 = self.hist_time[-1]
+        t0 = max(0.0, t1 - self.show_sec)
+
         if t1 == t0:
             t1 = t0 + 1e-6
 
@@ -316,11 +318,13 @@ class RealTime:
                     self.hist_pred["Fx"].append(Fx_pred)
                     self.hist_pred["Fy"].append(Fy_pred)
 
-                    if len(self.hist_time) > self.show_num:
+
+                    while len(self.hist_time) > 0 and (self.hist_time[-1] - self.hist_time[0]) > self.show_sec:
                         self.hist_time.pop(0)
                         for k in self.force_names:
                             self.hist_true[k].pop(0)
                             self.hist_pred[k].pop(0)
+
 
                     # csv
                     row = [
