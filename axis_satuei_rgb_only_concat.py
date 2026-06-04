@@ -136,7 +136,7 @@ class SC800IM700_1:
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 + 4739) / 11432
+            gf_data = (data_row * 10 + 1766) / 1699
             count1.value += 1
             if count1.value == 1:
                 gf_data_ini = gf_data
@@ -179,7 +179,7 @@ class SC800IM700_2(SC800IM700_1):
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 + 4944) / 6792
+            gf_data = (data_row * 10 + 2580) / 1657
             count2.value += 1
             if count2.value == 1:
                 gf_data_ini = gf_data
@@ -222,12 +222,12 @@ class SC800IM700_3(SC800IM700_1):
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 - 11400) / 11160
+            gf_data = (data_row * 10 - 645) / 2744
             count3.value += 1
             if count3.value == 1:
                 gf_data_ini = gf_data
             gf_data = gf_data - gf_data_ini
-            shear_force3.value = gf_data * (gf_data > 0)
+            shear_force3.value = gf_data
         ser.close()
 
 
