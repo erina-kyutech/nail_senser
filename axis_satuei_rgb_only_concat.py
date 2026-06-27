@@ -136,7 +136,7 @@ class SC800IM700_1:
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 + 1766) / 1699
+            gf_data = (data_row + 3601) / 1696
             count1.value += 1
             if count1.value == 1:
                 gf_data_ini = gf_data
@@ -179,7 +179,7 @@ class SC800IM700_2(SC800IM700_1):
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 + 2580) / 1657
+            gf_data = (data_row + 2623) / 1655
             count2.value += 1
             if count2.value == 1:
                 gf_data_ini = gf_data
@@ -222,12 +222,12 @@ class SC800IM700_3(SC800IM700_1):
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 - 645) / 2744
+            gf_data = (data_row * 10 - 938) / 17420
             count3.value += 1
             if count3.value == 1:
                 gf_data_ini = gf_data
             gf_data = gf_data - gf_data_ini
-            shear_force3.value = gf_data
+            shear_force3.value = gf_data * (gf_data > 0)
         ser.close()
 
 
@@ -265,7 +265,7 @@ class SC800IM700_4(SC800IM700_1):
             while data2 == b'':
                 data2 = ser.read()
             data_row = int.from_bytes(data1 + data2, 'big', signed=False)
-            gf_data = (data_row * 10 + 14240) / 11560
+            gf_data = (data_row + 4184) / 1145
             count4.value += 1
             if count4.value == 1:
                 gf_data_ini = gf_data
@@ -610,7 +610,7 @@ if __name__ == '__main__':
     xy_port_2 = 'COM9'; xy_address_2 = 0x2A
     xy_port_3 = 'COM10'; xy_address_3 = 0x2A
     xy_port_4 = 'COM12'; xy_address_4 = 0x2A
-    z_port = 'COM15'
+    z_port = 'COM21'
 
     shear_loadcell_1 = SC800IM700_1(xy_port_1, xy_address_1); shear_loadcell_1.power_on(); shear_loadcell_1.sub_ready()
     shear_loadcell_2 = SC800IM700_2(xy_port_2, xy_address_2); shear_loadcell_2.power_on(); shear_loadcell_2.sub_ready()
