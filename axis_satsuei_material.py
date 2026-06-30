@@ -437,6 +437,10 @@ class GraphMake:
         self.image_init0 = np.zeros((self.h, self.w, 3), dtype='uint8')
         self.image_plt = self.axL.imshow(self.image_init0, animated=True)
 
+        # ★ FPS計測用
+        self._fps_prev_time = time.perf_counter()
+        self._fps = 0.0
+
         self.t_line = np.arange(0, 5, 0.001)
         self.Fz_line = self.Fz / 2 * (1 - np.cos(2 * np.pi * self.fz * self.t_line))
         self.Fzz_line = 0
@@ -488,6 +492,14 @@ class GraphMake:
             self.graphstart = time.perf_counter()
 
     def updateframe(self, dum):
+        # ★ FPS計算
+        now = time.perf_counter()
+        dt = now - self._fps_prev_time
+        self._fps_prev_time = now
+        if dt > 0:
+            self._fps = self._fps * 0.9 + (1.0 / dt) * 0.1  # 指数移動平均
+        print(f'\rFPS: {self._fps:.1f}', end='')
+
         # ★ カメラを直接読まずバッファから取得する
         with self._lock_nail:
             base_n = self._frame_nail

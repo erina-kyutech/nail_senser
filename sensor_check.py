@@ -202,6 +202,7 @@ class SinglePushTester:
                     else:
                         self.result_text = "最後のステップです"
 
+
         finally:
             print("終了処理中...")
             self.ser_flag.value = False

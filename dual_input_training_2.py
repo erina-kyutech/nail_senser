@@ -3,6 +3,7 @@
 dual_input_training.py
 
 2入力VGG16モデル（指先ブランチ + 爪ブランチ）による3軸力推定。
+マスク済み画像（masked_nail_and_tip）版。
 concat画像(150×290)を左右に分割して2つのVGG16ブランチに入力し、
 特徴量を結合してFz, Fx, Fyを推定する。
 
@@ -41,7 +42,7 @@ CONCAT_W = FINGERTIP_W + NAIL_W  # 290
 NORMAL_FORCE_NORMALIZE = 10.0
 SHEAR_FORCE_NORMALIZE = 5.0
 
-MODEL_DIR = "./result/CNN_result/vgg16_dual_input_150x290/"
+MODEL_DIR = "./result/CNN_result/vgg16_dual_input_masked_nail_and_tip/"
 
 # ifuku番号による学習/テスト分割
 TRAINVAL_START = 1
@@ -139,7 +140,30 @@ class data_loader(object):
         alldatas_df = alldatas_df.dropna(subset=["ifuku_id"]).copy()
         alldatas_df["ifuku_id"] = alldatas_df["ifuku_id"].astype(int)
 
+        # 画像パスをマスク済みフォルダに置換
+        # 例: .../datas/record0-10xyz/ifuku1/360deg/0.png
+        #  → .../datas/masked_nail_and_tip/ifuku1/360deg/0.png
+        alldatas_df["img_path"] = alldatas_df["img_path"].apply(
+            self._replace_to_masked_path
+        )
+
         return alldatas_df
+
+    @staticmethod
+    def _replace_to_masked_path(path_str):
+        """
+        元画像パスをマスク済み画像パスに変換する。
+        record0-10xyz/ifukuN/360deg/X.png
+          → masked_nail_and_tip/ifukuN/360deg/X.png
+        """
+        import re
+        # record0-10xyz を masked_nail_and_tip に置換
+        replaced = re.sub(
+            r'record0-10xyz',
+            'masked_nail_and_tip',
+            str(path_str)
+        )
+        return replaced
 
     def data_normalize(self, X_fingertip, X_nail, Y):
         """
