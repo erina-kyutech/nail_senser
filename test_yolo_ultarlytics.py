@@ -11,12 +11,10 @@ import time
 import threading
 import numpy as np
 
-# ── まずultralyticsだけimportして確認 ────────────────────
 print("=== ultralytics import テスト ===")
 from ultralytics import YOLO
 print("ultralytics: OK")
 
-# ── 次にTensorFlowをimport ────────────────────────────────
 print("=== TensorFlow import テスト ===")
 import tensorflow as tf
 print("TensorFlow: OK")
@@ -25,7 +23,7 @@ print("GPU利用可能:", tf.config.list_physical_devices('GPU'))
 # =========================================================
 # 設定
 # =========================================================
-YOLO_WEIGHT_PATH = r"C:\Users\Owner\PycharmProjects\YOLO_nail_seg\runs\segment\runs\segment\nail_seg_v1\weights\best.pt"
+YOLO_WEIGHT_PATH = r"C:\Users\Owner\PycharmProjects\YOLO_nail_seg\runs\segment\runs\segment\nail_seg_v1\weights\best.onnx"
 
 CAM_NAIL = 1
 CAM_TIP  = 0
@@ -91,26 +89,28 @@ def extract_masks(result, orig_h, orig_w):
     if result.masks is None:
         return nail_mask, tip_mask
 
-    names = result.names
-    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+    names      = result.names
+    cls_ids    = result.boxes.cls.cpu().numpy().astype(int)
     masks_data = result.masks.data.cpu().numpy()  # (N, mh, mw)
 
     for i, cls_id in enumerate(cls_ids):
         m = masks_data[i]
-        if m.shape[0] != orig_h or m.shape[1] != orig_w:
-            m = cv2.resize(m, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-        m_bin = (m > 0.5).astype(np.uint8)
+        # cv2.resizeは(w, h)の順番
+        m_resized = cv2.resize(m.astype(np.float32), (orig_w, orig_h),
+                               interpolation=cv2.INTER_NEAREST)
+        m_bin = (m_resized > 0.5).astype(np.uint8)
 
-        if names[cls_id] == "nail":
+        class_name = names[cls_id]
+        if class_name == "nail":
             nail_mask = np.logical_or(nail_mask, m_bin).astype(np.uint8)
-        elif names[cls_id] == "finger_tip":
+        elif class_name == "finger_tip":
             tip_mask = np.logical_or(tip_mask, m_bin).astype(np.uint8)
 
     return nail_mask, tip_mask
 
 
 def main():
-    print("\n=== YOLOモデル読み込み（CPUで動かす） ===")
+    print("\n=== YOLOモデル読み込み ===")
     yolo = YOLO(YOLO_WEIGHT_PATH)
     print("YOLO読み込み: OK")
 
@@ -120,7 +120,6 @@ def main():
     if (not cap_nail.isOpened()) or (not cap_tip.isOpened()):
         raise RuntimeError("カメラを開けませんでした")
 
-    # カメラスレッド
     _frame_nail = [None]
     _frame_tip  = [None]
     _lock_nail  = threading.Lock()
@@ -145,7 +144,7 @@ def main():
     threading.Thread(target=read_tip,  daemon=True).start()
     time.sleep(0.5)
 
-    fps_ema = 0.0
+    fps_ema  = 0.0
     prev_time = time.perf_counter()
 
     print("準備OK。'q'キーで終了")
@@ -161,32 +160,43 @@ def main():
 
         concat_bgr = make_concat_bgr(base_n, base_t)
 
-        # ★ YOLOはCPUで推論（device="cpu"）
         t0 = time.perf_counter()
-        results = yolo.predict(source=concat_bgr, device="cpu", verbose=False)
+        results = yolo.predict(
+            source=concat_bgr,
+            device="cpu",
+            verbose=False,
+            imgsz=[160, 320],
+            conf=0.1
+        )
         t1 = time.perf_counter()
 
-        nail_mask, tip_mask = extract_masks(results[0], OUT_H, OUT_W_LEFT + OUT_W_RIGHT)
+        nail_mask, tip_mask = extract_masks(
+            results[0], OUT_H, OUT_W_LEFT + OUT_W_RIGHT
+        )
 
         now = time.perf_counter()
-        dt = now - prev_time
+        dt  = now - prev_time
         prev_time = now
         if dt > 0:
             fps_ema = fps_ema * 0.9 + (1.0 / dt) * 0.1
 
         yolo_ms = (t1 - t0) * 1000
 
-        # 可視化
+        # 可視化（赤=爪、青=指先）
         disp = concat_bgr.copy()
-        disp[nail_mask == 1] = (0, 0, 180)    # 赤 = 爪
-        disp[tip_mask  == 1] = (180, 0, 0)    # 青 = 指先
+        disp[nail_mask == 1] = (0,   0, 180)
+        disp[tip_mask  == 1] = (180, 0,   0)
 
-        disp_large = cv2.resize(disp, ((OUT_W_LEFT + OUT_W_RIGHT) * 3, OUT_H * 3))
-        cv2.putText(disp_large, f"FPS: {fps_ema:.1f}  YOLO(CPU): {yolo_ms:.1f}ms",
+        disp_large = cv2.resize(
+            disp, ((OUT_W_LEFT + OUT_W_RIGHT) * 3, OUT_H * 3)
+        )
+        cv2.putText(disp_large,
+                    f"FPS: {fps_ema:.1f}  YOLO(CPU): {yolo_ms:.1f}ms",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(disp_large, f"nail={int(nail_mask.sum())}px  tip={int(tip_mask.sum())}px",
+        cv2.putText(disp_large,
+                    f"nail={int(nail_mask.sum())}px  tip={int(tip_mask.sum())}px",
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.imshow("YOLO ultralytics (CPU) test", disp_large)
+        cv2.imshow("YOLO ultralytics (CPU) test  red=nail  blue=tip", disp_large)
 
         print(f"\rFPS: {fps_ema:.1f}  YOLO(CPU): {yolo_ms:.1f}ms  "
               f"nail={int(nail_mask.sum())}px  tip={int(tip_mask.sum())}px", end="")
