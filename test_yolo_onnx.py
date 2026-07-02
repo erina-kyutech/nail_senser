@@ -90,13 +90,34 @@ def make_concat_bgr(img_nail_bgr, img_tip_bgr):
     return cv2.hconcat([roi_n, roi_t])
 
 
+def letterbox(img, new_h, new_w, color=(114, 114, 114)):
+    """
+    アスペクト比を保ったままリサイズしてパディングする。
+    ultralyticsのpredict()が内部でやってるのと同じ処理。
+    """
+    h, w = img.shape[:2]
+    r = min(new_h / h, new_w / w)
+    new_unpad_w = int(round(w * r))
+    new_unpad_h = int(round(h * r))
+    dw = (new_w - new_unpad_w) / 2
+    dh = (new_h - new_unpad_h) / 2
+    resized = cv2.resize(img, (new_unpad_w, new_unpad_h), interpolation=cv2.INTER_LINEAR)
+    top    = int(round(dh - 0.1))
+    bottom = int(round(dh + 0.1))
+    left   = int(round(dw - 0.1))
+    right  = int(round(dw + 0.1))
+    return cv2.copyMakeBorder(resized, top, bottom, left, right,
+                              cv2.BORDER_CONSTANT, value=color)
+
+
 def preprocess_for_yolo(concat_bgr):
     """
-    concat画像（150×290）をYOLO入力用（160×320）にリサイズして
-    BCHW形式のfloat32配列に変換する
+    concat画像（150×290）をYOLO入力用（160×320）に変換する。
+    単純リサイズではなくletterbox（アスペクト比を保ってパディング）を使う。
+    これがultralyticsのpredict()と同じ前処理になる。
     """
-    resized = cv2.resize(concat_bgr, (YOLO_W, YOLO_H))
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    lb = letterbox(concat_bgr, YOLO_H, YOLO_W)   # BGR, (160, 320, 3)
+    rgb = cv2.cvtColor(lb, cv2.COLOR_BGR2RGB)
     x = rgb.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))   # HWC → CHW
     x = np.expand_dims(x, axis=0)    # CHW → BCHW
