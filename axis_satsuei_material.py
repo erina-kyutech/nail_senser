@@ -295,6 +295,53 @@ class gf2000:
 
 
 class GraphMake:
+    # ====== 素材選択の定義（追加） ======
+    MATERIAL_OPTIONS = {
+        '1': ('felt', 'felt_0-10xyz'),
+        '2': ('acrylic', 'acrylic_0-10xyz'),
+        '3': ('paper', 'paper_0-10xyz'),
+        '4': ('aluminum', 'aluminum_0-10xyz'),
+    }
+    MATERIAL_NAME_ALIASES = {
+        'felt': 'felt', 'フェルト': 'felt',
+        'acrylic': 'acrylic', 'アクリル': 'acrylic',
+        'paper': 'paper', '紙': 'paper', 'かみ': 'paper',
+        'aluminum': 'aluminum', 'aluminium': 'aluminum', 'アルミ': 'aluminum', 'アルミニウム': 'aluminum',
+    }
+
+    def _select_material(self):
+        """
+        実行時に素材を選択させる。
+        番号(1-4)でも素材名でも入力できて、
+        不正な入力の場合は再入力を促す。
+        """
+        prompt = (
+            '素材を選んでください:\n'
+            '  1: felt (フェルト)\n'
+            '  2: acrylic (アクリル)\n'
+            '  3: paper (紙)\n'
+            '  4: aluminum (アルミ)\n'
+            '番号 または 素材名で入力 > '
+        )
+        while True:
+            raw = input(prompt).strip()
+
+            if raw in self.MATERIAL_OPTIONS:
+                name, force_path = self.MATERIAL_OPTIONS[raw]
+                print(f'[INFO] 選択された素材: {name} -> {force_path}')
+                return force_path
+
+            key = raw.lower()
+            if key in self.MATERIAL_NAME_ALIASES:
+                canonical = self.MATERIAL_NAME_ALIASES[key]
+                for _, (name, force_path) in self.MATERIAL_OPTIONS.items():
+                    if name == canonical:
+                        print(f'[INFO] 選択された素材: {name} -> {force_path}')
+                        return force_path
+
+            print(f'[WARN] "{raw}" は認識できませんでした。1-4の番号か素材名で入力し直してください。\n')
+    # ====== ここまで追加 ======
+
     def __init__(self):
         nowdir = os.path.dirname(__file__)
         print('now_directry:', nowdir)
@@ -303,11 +350,8 @@ class GraphMake:
 
         self.Fz = 10
 
-        # ★ここを素材に合わせて1行だけコメントアウトを外す★
-        self.force_path = 'felt_0-10xyz'       # フェルト  ← 使う行だけ残す
-        # self.force_path = 'acrylic_0-10xyz'  # アクリル
-        # self.force_path = 'paper_0-10xyz'    # 紙
-        # self.force_path = 'aluminum_0-10xyz' # アルミ
+        # ★素材はコメントアウトではなく実行時選択に変更（変更）
+        self.force_path = self._select_material()
 
         self.degree_str = 360
 
@@ -318,6 +362,33 @@ class GraphMake:
         os.makedirs(self.save_dir, exist_ok=False)
         self.datalog_path = self.save_dir + '/datalog.csv'
         self.namelist_path = './datas/' + self.force_path + '/namelist.csv'
+
+        # ====== 回転オフセットの管理（追加） ======
+        # 元の12方向パターンは30度おきなので、施行を重ねるたびに
+        # ROTATION_STEP_DEG ずつ時計回りにパターン全体をずらすことで、
+        # 複数回の撮影を合計した時に30度の隙間が埋まっていくようにする。
+        # 素材フォルダ単位で「これまで何回撮ったか」をテキストファイルに記録し、
+        # 起動ごとに自動で読み込み→次回用に+1して書き戻す。
+        self.ROTATION_STEP_DEG = 5.0  # 6回で5度刻みに密になる
+        self.rotation_state_path = './datas/' + self.force_path + '/rotation_state.txt'
+
+        run_count = 0
+        if os.path.exists(self.rotation_state_path):
+            try:
+                with open(self.rotation_state_path, 'r', encoding='utf-8') as f:
+                    run_count = int(f.read().strip())
+            except (ValueError, OSError):
+                run_count = 0
+
+        self.direction_offset_deg = (run_count * self.ROTATION_STEP_DEG) % 30.0
+        self._rotation_rad = math.radians(self.direction_offset_deg)
+
+        with open(self.rotation_state_path, 'w', encoding='utf-8') as f:
+            f.write(str(run_count + 1))
+
+        print(f'[INFO] この施行の回転オフセット: {self.direction_offset_deg:.1f}度'
+              f'（この素材でこれまでの撮影回数: {run_count}）')
+        # ====== ここまで追加 ======
 
         self.name_csv = open(self.namelist_path, 'a', newline='')
         self.name_writing = csv.writer(self.name_csv)
@@ -412,7 +483,9 @@ class GraphMake:
         self.axM.set_xlabel('Shear force x [N]', fontsize=label_fontsize)
         self.axM.set_ylabel('Normal force z [N]', fontsize=label_fontsize)
 
-        self.axR.set_title('Shear force command', fontsize=title_fontsize)
+        # ====== タイトルに今回の回転オフセットを表示（変更） ======
+        self.axR.set_title(f'Shear force command\n(rotation offset: {self.direction_offset_deg:.1f} deg)', fontsize=title_fontsize)
+        # ====== ここまで変更 ======
         self.axR.set_xlabel('Shear force x [N]', fontsize=label_fontsize)
         self.axR.set_ylabel('Shear force y [N]', fontsize=label_fontsize)
 
@@ -465,6 +538,20 @@ class GraphMake:
             if ret and frame is not None:
                 with self._lock_tip:
                     self._frame_tip = frame
+
+    # ====== 回転オフセット適用用ヘルパー（追加） ======
+    def _rotate_fr_ff(self, fr, ff):
+        """
+        お手本の軌跡・目標点(Fr, Ff)を self._rotation_rad だけ時計回りに回転する。
+        fr, ff はスカラーでもnumpy配列でもそのまま使える。
+        実際にロードセルで測定した値は回転しない（あくまでガイド表示のみ回す）。
+        """
+        cos_t = math.cos(self._rotation_rad)
+        sin_t = math.sin(self._rotation_rad)
+        fr_rot = fr * cos_t + ff * sin_t
+        ff_rot = -fr * sin_t + ff * cos_t
+        return fr_rot, ff_rot
+    # ====== ここまで追加 ======
 
     def onkey(self, event):
         if event.key == 'escape':
@@ -556,6 +643,12 @@ class GraphMake:
         elif (45 <= self.rec_t and self.rec_t < 50):
             self.Fr_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)) * (-1)
 
+        # ====== 回転オフセットを適用（追加） ======
+        # 実際の測定値(Fr,Ff)は回転しない。お手本の矢印だけをずらすことで
+        # 人がそれに追従すれば、施行ごとに違う方向の力が自然と入るようになる。
+        self.Fr_line, self.Ff_line = self._rotate_fr_ff(self.Fr_line, self.Ff_line)
+        # ====== ここまで追加 ======
+
         self.line.set_data(self.Fr_line, self.Ff_line)
         self.line_M.set_data(self.Fzz_line, self.Fz_line)
 
@@ -631,6 +724,11 @@ class GraphMake:
 
             self.rec2.set_data(Fzz, Fz)
             self.rec4.set_data(Fr, Ff)
+
+            # ====== 回転オフセットを適用（追加） ======
+            self.now_Fr, self.now_Ff = self._rotate_fr_ff(self.now_Fr, self.now_Ff)
+            # ====== ここまで追加 ======
+
             self.now_F.set_data(self.now_Fr, self.now_Ff)
             self.now_R.set_data(self.now_Fzz, self.now_Fz)
             return self.rec2, self.rec4, self.image_plt, self.line, self.line_M, self.now_F, self.now_R
@@ -667,14 +765,16 @@ if __name__ == '__main__':
     shear_loadcell_4 = SC800IM700_4(xy_port_4, xy_address_4); shear_loadcell_4.power_on(); shear_loadcell_4.sub_ready()
     normal_loadcell = gf2000(z_port); normal_loadcell.sub_ready()
 
-    sub_z = Process(target=gf2000.sub_loop, args=[z_port, ser_flag, normal_force])
+    # daemon=True にして、メイン側が異常終了しても
+    # 子プロセスがCOMポートを掴んだまま残らないようにする（変更）
+    sub_z = Process(target=gf2000.sub_loop, args=[z_port, ser_flag, normal_force], daemon=True)
     sub_z.start()
 
     count1 = Value('i', 0); count2 = Value('i', 0); count3 = Value('i', 0); count4 = Value('i', 0)
-    sub_xy1 = Process(target=SC800IM700_1.sub_loop, args=[xy_port_1, xy_address_1, ser_flag, shear_force1, count1])
-    sub_xy2 = Process(target=SC800IM700_2.sub_loop, args=[xy_port_2, xy_address_2, ser_flag, shear_force2, count2])
-    sub_xy3 = Process(target=SC800IM700_3.sub_loop, args=[xy_port_3, xy_address_3, ser_flag, shear_force3, count3])
-    sub_xy4 = Process(target=SC800IM700_4.sub_loop, args=[xy_port_4, xy_address_4, ser_flag, shear_force4, count4])
+    sub_xy1 = Process(target=SC800IM700_1.sub_loop, args=[xy_port_1, xy_address_1, ser_flag, shear_force1, count1], daemon=True)
+    sub_xy2 = Process(target=SC800IM700_2.sub_loop, args=[xy_port_2, xy_address_2, ser_flag, shear_force2, count2], daemon=True)
+    sub_xy3 = Process(target=SC800IM700_3.sub_loop, args=[xy_port_3, xy_address_3, ser_flag, shear_force3, count3], daemon=True)
+    sub_xy4 = Process(target=SC800IM700_4.sub_loop, args=[xy_port_4, xy_address_4, ser_flag, shear_force4, count4], daemon=True)
     sub_xy1.start(); sub_xy2.start(); sub_xy3.start(); sub_xy4.start()
 
     graph = GraphMake()
