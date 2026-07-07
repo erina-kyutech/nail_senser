@@ -61,10 +61,10 @@ RESULT_ROOT  = PROJECT_ROOT / "result" / "CNN_result" / "material_models"
 
 # 素材フォルダ名（_maskedを付けたもの）
 MATERIAL_DIRS = {
-    "felt":     "felt_0-10xyz_masked",
-    "acrylic":  "acrylic_0-10xyz_masked",
-    "paper":    "paper_0-10xyz_masked",
-    "aluminum": "aluminum_0-10xyz_masked",
+    "felt":     "felt_0-10xyz_dedup_masked",
+    "acrylic":  "acrylic_0-10xyz_dedup_masked",
+    "paper":    "paper_0-10xyz_dedup_masked",
+    "aluminum": "aluminum_0-10xyz_dedup_masked",
 }
 
 # マスクパターン（フォルダ名）
@@ -83,22 +83,35 @@ def resolve_img_path(path_str: str, mask_pattern: str) -> Path:
     """
     datalog.csvのパスをマスク済みパターンのパスに変換する。
     例：
-      元パス: felt_0-10xyz_masked/ifuku1/360deg/0.png
+      元パス: felt_0-10xyz/ifuku1/360deg/0.png
       変換後: felt_0-10xyz_masked/ifuku1/360deg/nail_and_tip/0.png
+
+    やること：
+      1. 素材フォルダ名に_maskedを付ける（felt_0-10xyz → felt_0-10xyz_masked）
+      2. 360deg/の直下にマスクパターンフォルダを挿入
     """
     p = Path(path_str)
     if not p.is_absolute():
         path_str2 = str(p).replace("./", "", 1).replace(".\\", "", 1)
-        p = PROJECT_ROOT / path_str2
+        p = DATA_ROOT / path_str2
 
-    # 360deg/0.png → 360deg/nail_and_tip/0.png
+    # パーツに分解して変換する
     parts = list(p.parts)
+
+    # ① 素材フォルダ名（xxxxx_0-10xyz）に_maskedを付ける
+    for i, part in enumerate(parts):
+        if part.endswith("_0-10xyz") and not part.endswith("_masked"):
+            parts[i] = part + "_masked"
+            break
+
+    # ② 360deg の直下にmask_patternフォルダを挿入
     try:
         deg_idx = parts.index("360deg")
         parts.insert(deg_idx + 1, mask_pattern)
-        return Path(*parts)
     except ValueError:
-        return p.parent / mask_pattern / p.name
+        pass
+
+    return Path(*parts)
 
 
 def parse_ifuku_id(path_str: str) -> int | None:
@@ -144,9 +157,18 @@ def load_datalog(namelist_path: Path, mask_pattern: str) -> pd.DataFrame:
     """
     namelist.csvを読んで全セッションのdatalogを結合する。
     img_pathをマスクパターンのパスに変換する。
+
+    namelist.csvが_maskedフォルダにない場合は、
+    元フォルダ（_maskedを除いたフォルダ）のnamelist.csvを参照する。
     """
     if not namelist_path.exists():
-        raise FileNotFoundError(f"namelist.csv not found: {namelist_path}")
+        # _maskedを除いた元フォルダのnamelist.csvを探す
+        fallback_path = Path(str(namelist_path).replace("_masked", ""))
+        if fallback_path.exists():
+            print(f"  [INFO] namelist.csvを元フォルダから参照: {fallback_path}")
+            namelist_path = fallback_path
+        else:
+            raise FileNotFoundError(f"namelist.csv not found: {namelist_path}\n元フォルダにも見つかりません: {fallback_path}")
 
     names = pd.read_csv(namelist_path, header=None)
     all_df = pd.DataFrame(columns=["img_path", "Fz", "Fx", "Fy", "ifuku_id"])
@@ -355,10 +377,6 @@ def main():
         for mat_name, mat_dir_name in MATERIAL_DIRS.items():
             namelist_path = DATA_ROOT / mat_dir_name / "namelist.csv"
 
-            if not namelist_path.exists():
-                print(f"\n[SKIP] namelist.csvなし: {namelist_path}")
-                continue
-
             print(f"\n--- {mat_name} × {mask_pattern} ---")
 
             df = load_datalog(namelist_path, mask_pattern)
@@ -377,8 +395,6 @@ def main():
         all_dfs = []
         for mat_name, mat_dir_name in MATERIAL_DIRS.items():
             namelist_path = DATA_ROOT / mat_dir_name / "namelist.csv"
-            if not namelist_path.exists():
-                continue
             df = load_datalog(namelist_path, mask_pattern)
             if len(df) > 0:
                 df["material"] = mat_name
@@ -388,8 +404,42 @@ def main():
             print("  [SKIP] データが空です")
             continue
 
-        combined_df = pd.concat(all_dfs, ignore_index=True)
-        print(f"  全データ: {len(combined_df)} samples")
+        # ── 各素材から均等にサンプリングして合計を個別モデルと揃える ──
+        # 個別モデル（1素材）と同じ合計枚数になるように
+        # 各素材から均等に取る
+        # 例：各素材6万枚 × 4素材 → 各素材から1.5万枚 → 合計6万枚
+        total_samples = sum(len(df) for df in all_dfs)
+        avg_per_mat   = total_samples // len(all_dfs)  # 平均サンプル数（個別モデルと同じスケール）
+        per_mat_target = avg_per_mat // len(all_dfs)   # 各素材から取る枚数
+
+        sizes = {df["material"].iloc[0]: len(df) for df in all_dfs}
+        print(f"  各素材のサンプル数: {sizes}")
+        print(f"  各素材から約{per_mat_target}枚サンプリング → 合計約{per_mat_target * len(all_dfs)}枚")
+
+        sampled_dfs = []
+        for df in all_dfs:
+            mat_name = df["material"].iloc[0]
+            if len(df) > per_mat_target:
+                # ifuku番号単位でサンプリング
+                all_ids = sorted(df["ifuku_id"].unique().tolist())
+                random.Random(RANDOM_SEED).shuffle(all_ids)
+                sampled_ids = []
+                sampled_count = 0
+                for id_ in all_ids:
+                    id_count = len(df[df["ifuku_id"] == id_])
+                    if sampled_count + id_count <= per_mat_target:
+                        sampled_ids.append(id_)
+                        sampled_count += id_count
+                    if sampled_count >= int(per_mat_target * 0.95):
+                        break
+                sampled_df = df[df["ifuku_id"].isin(sampled_ids)].reset_index(drop=True)
+            else:
+                sampled_df = df
+            print(f"  {mat_name}: {len(df)} → {len(sampled_df)} samples")
+            sampled_dfs.append(sampled_df)
+
+        combined_df = pd.concat(sampled_dfs, ignore_index=True)
+        print(f"  混合モデル合計: {len(combined_df)} samples（個別モデルと同スケール）")
 
         result_dir = RESULT_ROOT / f"all_materials_{mask_pattern}"
         train_one_model(combined_df, result_dir, f"all_materials_{mask_pattern}")
