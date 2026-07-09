@@ -106,13 +106,21 @@ def dedup_one_session(session_name: str, img_dir: Path, output_root: Path):
         print(f"  [WARN] 画像が見つかりません: {img_dir}")
         return 0, 0
 
-    out_session_dir = output_root / session_name / "360deg"
+    out_session_dir  = output_root / session_name / "360deg"
+    dst_datalog_path = out_session_dir / "datalog.csv"
     out_session_dir.mkdir(parents=True, exist_ok=True)
 
     prev_hash = None
     kept_rows = []
     new_idx   = 0
     total     = len(images)
+
+    # ★ 出力フォルダにすでにdatalog.csvがあればスキップ
+    if dst_datalog_path.exists():
+        existing = pd.read_csv(dst_datalog_path, header=0)
+        existing_count = len(existing)
+        print(f"  [SKIP] 既存: {out_session_dir} ({existing_count}枚)")
+        return len(images), existing_count
 
     for idx, path in images:
         img = cv2.imread(str(path))
@@ -146,8 +154,8 @@ def dedup_one_session(session_name: str, img_dir: Path, output_root: Path):
         new_idx += 1
 
     # 新しいdatalog.csvを保存
-    out_datalog_path = out_session_dir / "datalog.csv"
-    with open(out_datalog_path, "w", newline="", encoding="utf-8") as f:
+    # datalog.csvパスはdst_datalog_pathとして既に定義済み
+    with open(dst_datalog_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["path", "Fz", "Fr", "Ff"])
         writer.writerows(kept_rows)
