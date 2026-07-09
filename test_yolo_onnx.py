@@ -32,8 +32,7 @@ ORIG_H = 150
 ORIG_W = 290
 
 # クラス定義（nail_seg_v1の学習時と同じ順番）
-CLASS_NAMES = {0: "nail", 1: "finger_tip"}
-
+CLASS_NAMES = {0: "finger_tip", 1: "nail"}
 # カメラ
 CAM_NAIL = 1
 CAM_TIP  = 0

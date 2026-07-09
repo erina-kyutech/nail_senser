@@ -3,7 +3,7 @@ import time
 import cv2
 from multiprocessing import Process, Value
 
-import axis_satuei_rgb_only_concat as axis_mod
+import axis_satsuei_material as axis_mod
 
 # -------- classes --------
 gf2000 = axis_mod.gf2000

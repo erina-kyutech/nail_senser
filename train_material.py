@@ -93,7 +93,11 @@ def resolve_img_path(path_str: str, mask_pattern: str) -> Path:
     p = Path(path_str)
     if not p.is_absolute():
         path_str2 = str(p).replace("./", "", 1).replace(".\\", "", 1)
-        p = DATA_ROOT / path_str2
+        # datasが既にパスに含まれてる場合は重複を避ける
+        if path_str2.startswith("datas\\") or path_str2.startswith("datas/"):
+            p = PROJECT_ROOT / path_str2
+        else:
+            p = DATA_ROOT / path_str2
 
     # パーツに分解して変換する
     parts = list(p.parts)
@@ -162,13 +166,22 @@ def load_datalog(namelist_path: Path, mask_pattern: str) -> pd.DataFrame:
     元フォルダ（_maskedを除いたフォルダ）のnamelist.csvを参照する。
     """
     if not namelist_path.exists():
-        # _maskedを除いた元フォルダのnamelist.csvを探す
-        fallback_path = Path(str(namelist_path).replace("_masked", ""))
-        if fallback_path.exists():
-            print(f"  [INFO] namelist.csvを元フォルダから参照: {fallback_path}")
-            namelist_path = fallback_path
+        # _dedup_masked → _dedup → 元フォルダ の順に探す
+        fallback_dedup = Path(str(namelist_path).replace("_dedup_masked", "_dedup"))
+        fallback_orig  = Path(str(namelist_path).replace("_dedup_masked", "").replace("_masked", ""))
+
+        if fallback_dedup.exists():
+            print(f"  [INFO] namelist.csvを_dedupフォルダから参照: {fallback_dedup}")
+            namelist_path = fallback_dedup
+        elif fallback_orig.exists():
+            print(f"  [INFO] namelist.csvを元フォルダから参照: {fallback_orig}")
+            namelist_path = fallback_orig
         else:
-            raise FileNotFoundError(f"namelist.csv not found: {namelist_path}\n元フォルダにも見つかりません: {fallback_path}")
+            raise FileNotFoundError(
+                f"namelist.csv not found: {namelist_path}\n"
+                f"_dedupにも見つかりません: {fallback_dedup}\n"
+                f"元フォルダにも見つかりません: {fallback_orig}"
+            )
 
     names = pd.read_csv(namelist_path, header=None)
     all_df = pd.DataFrame(columns=["img_path", "Fz", "Fx", "Fy", "ifuku_id"])
