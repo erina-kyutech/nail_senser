@@ -8,8 +8,9 @@ VGG16ベースで4クラス（felt/acrylic/paper/aluminum）を分類する。
 入力：マスク済み画像（nail_and_tip）150×290px
 出力：各素材の確率（softmax、4クラス）
 
-学習データ：ifuku1〜30の_dedup_masked/nail_and_tip画像
-テストデータ：ifuku31〜35（評価には使わない、分類器はリアルタイム用）
+学習・バリデーションデータ：ifuku1〜30の_dedup_masked/nail_and_tip画像
+テストデータ：ifuku31〜35（重み更新には一切使わない完全ホールドアウト。
+              学習後にこのスクリプト内で精度評価まで行う）
 
 保存先：
   result/CNN_result/material_classifier/
@@ -18,6 +19,7 @@ VGG16ベースで4クラス（felt/acrylic/paper/aluminum）を分類する。
 from __future__ import annotations
 
 import gc
+import json
 import random
 import re
 from pathlib import Path
@@ -26,11 +28,14 @@ import cv2
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import matplotlib.pyplot as plt
 from keras import regularizers
 from keras.applications.vgg16 import VGG16
 from keras.layers import Input, Dense, Dropout, GlobalMaxPooling2D
 from keras.models import Model
 from keras.optimizers import Adam
+
+from sklearn.metrics import confusion_matrix, classification_report
 
 # =========================================================
 # 設定
@@ -45,9 +50,13 @@ VAL_RATIO  = 0.15
 
 MASK_PATTERN = "nail_and_tip"
 
-# 学習に使うifuku番号範囲
+# 学習・バリデーションに使うifuku番号範囲
 TRAIN_IFUKU_START = 1
 TRAIN_IFUKU_END   = 30
+
+# テスト（完全ホールドアウト、重み更新なし）に使うifuku番号範囲
+TEST_IFUKU_START = 31
+TEST_IFUKU_END   = 35
 
 PROJECT_ROOT = Path(r"C:\Users\Owner\PycharmProjects")
 DATA_ROOT    = PROJECT_ROOT / "datas"
@@ -68,6 +77,7 @@ LABEL_MAP = {
     "aluminum": 3,
 }
 NUM_CLASSES = 4
+MATERIAL_NAMES = list(LABEL_MAP.keys())   # 混同行列などの表示順に使う
 
 
 # =========================================================
@@ -77,6 +87,17 @@ def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+
+
+def setup_japanese_font():
+    """Windows環境向けに日本語フォントを試行設定（無ければ既定のまま）"""
+    for font_name in ["Yu Gothic", "MS Gothic", "Meiryo"]:
+        try:
+            plt.rcParams["font.family"] = font_name
+            break
+        except Exception:
+            continue
+    plt.rcParams["axes.unicode_minus"] = False
 
 
 def parse_ifuku_id(path_str):
@@ -167,6 +188,23 @@ def load_material_data(mat_name: str, mat_dir_name: str,
     return all_df
 
 
+def load_all_materials(ifuku_start: int, ifuku_end: int, tag: str = "") -> pd.DataFrame:
+    """全素材分をまとめて読み込む（学習用・テスト用どちらにも使う共通関数）"""
+    all_dfs = []
+    for mat_name, mat_dir_name in MATERIAL_DIRS.items():
+        df = load_material_data(mat_name, mat_dir_name, ifuku_start, ifuku_end)
+        if len(df) > 0:
+            print(f"  [{tag}] {mat_name}: {len(df)} samples")
+            all_dfs.append(df)
+        else:
+            print(f"  [WARN][{tag}] {mat_name}: 0 samples (ifuku{ifuku_start}~{ifuku_end})")
+
+    if len(all_dfs) == 0:
+        return pd.DataFrame()
+
+    return pd.concat(all_dfs, ignore_index=True)
+
+
 # =========================================================
 # Sequence
 # =========================================================
@@ -232,6 +270,85 @@ def build_classifier() -> Model:
 
 
 # =========================================================
+# テスト評価（ifuku31〜35、完全ホールドアウト）
+# =========================================================
+def evaluate_on_test(model: Model, test_df: pd.DataFrame, result_root: Path) -> None:
+    if len(test_df) == 0:
+        print("[WARN] テストデータが空のため評価をスキップします")
+        return
+
+    setup_japanese_font()
+
+    test_seq = ClassifierSequence(test_df, batch_size=BATCH_SIZE, shuffle=False)
+
+    print(f"\n=== テスト評価 (ifuku{TEST_IFUKU_START}~{TEST_IFUKU_END}, {len(test_df)} samples) ===")
+    y_pred_proba = model.predict(test_seq, verbose=1)
+    y_pred = np.argmax(y_pred_proba, axis=1)
+
+    # Sequenceはbatch単位で切り捨てられる場合があるので、実際に予測できた分だけ真値を揃える
+    n_pred = len(y_pred)
+    y_true = test_df["label"].values[:n_pred]
+
+    overall_acc = float((y_pred == y_true).mean())
+    print(f"\ntest accuracy (ifuku{TEST_IFUKU_START}~{TEST_IFUKU_END}): {overall_acc:.4f}")
+
+    # classification report
+    report_dict = classification_report(
+        y_true, y_pred, target_names=MATERIAL_NAMES, output_dict=True, zero_division=0
+    )
+    report_df = pd.DataFrame(report_dict).transpose()
+    report_csv_path = result_root / "test_classification_report.csv"
+    report_df.to_csv(report_csv_path, encoding="utf-8-sig")
+    print(classification_report(y_true, y_pred, target_names=MATERIAL_NAMES, zero_division=0))
+
+    # 混同行列
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(NUM_CLASSES)))
+    cm_norm = np.divide(
+        cm.astype("float"), cm.sum(axis=1, keepdims=True),
+        out=np.zeros_like(cm, dtype="float"),
+        where=cm.sum(axis=1, keepdims=True) != 0
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, mat, title, fmt in [
+        (axes[0], cm, "混同行列（件数）", "d"),
+        (axes[1], cm_norm, "混同行列（正規化）", ".2f"),
+    ]:
+        im = ax.imshow(mat, cmap="Blues")
+        ax.set_xticks(range(NUM_CLASSES)); ax.set_xticklabels(MATERIAL_NAMES, rotation=45)
+        ax.set_yticks(range(NUM_CLASSES)); ax.set_yticklabels(MATERIAL_NAMES)
+        ax.set_xlabel("予測"); ax.set_ylabel("真値")
+        ax.set_title(title)
+        vmax = mat.max() if mat.max() > 0 else 1
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                val = mat[i, j]
+                txt = f"{val:{fmt}}"
+                color = "white" if val > vmax * 0.6 else "black"
+                ax.text(j, i, txt, ha="center", va="center", color=color)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    plt.suptitle(f"素材分類器 テスト混同行列 (ifuku{TEST_IFUKU_START}~{TEST_IFUKU_END}, input={MASK_PATTERN})")
+    plt.tight_layout()
+    cm_fig_path = result_root / "test_confusion_matrix.png"
+    plt.savefig(cm_fig_path, dpi=180, bbox_inches="tight")
+    plt.close()
+
+    # サンプルごとの予測（リアルタイム重み付けアンサンブルの検証にそのまま使える）
+    detail_df = test_df.iloc[:n_pred].copy()
+    detail_df["pred_label"] = y_pred
+    detail_df["pred_material"] = [MATERIAL_NAMES[i] for i in y_pred]
+    for i, m in enumerate(MATERIAL_NAMES):
+        detail_df[f"proba_{m}"] = y_pred_proba[:, i]
+    detail_csv_path = result_root / "test_predictions_detail.csv"
+    detail_df.to_csv(detail_csv_path, index=False, encoding="utf-8-sig")
+
+    print(f"\n保存: {report_csv_path}")
+    print(f"保存: {cm_fig_path}")
+    print(f"保存: {detail_csv_path}")
+
+
+# =========================================================
 # メイン
 # =========================================================
 def main():
@@ -240,87 +357,86 @@ def main():
     (RESULT_ROOT / "weights").mkdir(exist_ok=True)
 
     weight_path = RESULT_ROOT / "weights" / "classifier_weights.h5"
-    if weight_path.exists():
-        print(f"[SKIP] 重みが既に存在します: {weight_path}")
-        return
+    json_path = RESULT_ROOT / "classifier.json"
 
-    # ── 全素材のデータを読み込む ────────────────────────────
-    print("=== データ読み込み ===")
-    all_dfs = []
-    for mat_name, mat_dir_name in MATERIAL_DIRS.items():
-        df = load_material_data(
-            mat_name, mat_dir_name,
-            TRAIN_IFUKU_START, TRAIN_IFUKU_END
-        )
-        if len(df) > 0:
-            print(f"  {mat_name}: {len(df)} samples")
-            all_dfs.append(df)
-
-    if len(all_dfs) == 0:
-        print("[ERROR] データが読み込めませんでした")
-        return
-
-    combined_df = pd.concat(all_dfs, ignore_index=True)
-    print(f"  合計: {len(combined_df)} samples")
-
-    # ── ifuku番号単位でtrain/val分割 ─────────────────────────
-    all_ids = sorted(combined_df["ifuku_id"].unique().tolist())
-    random.Random(RANDOM_SEED).shuffle(all_ids)
-    val_size  = max(1, int(len(all_ids) * VAL_RATIO))
-    val_ids   = sorted(all_ids[:val_size])
-    train_ids = sorted(all_ids[val_size:])
-
-    train_df = combined_df[combined_df["ifuku_id"].isin(train_ids)].reset_index(drop=True)
-    val_df   = combined_df[combined_df["ifuku_id"].isin(val_ids)].reset_index(drop=True)
-
-    print(f"\n  train: {len(train_df)} samples ({len(train_ids)} sessions)")
-    print(f"  val  : {len(val_df)} samples ({len(val_ids)} sessions)")
-
-    # ── Sequence作成 ──────────────────────────────────────────
-    train_seq = ClassifierSequence(train_df, batch_size=BATCH_SIZE, shuffle=True)
-    val_seq   = ClassifierSequence(val_df,   batch_size=BATCH_SIZE, shuffle=False)
-
-    # ── モデル構築・学習 ──────────────────────────────────────
-    print("\n=== 学習開始 ===")
     model = build_classifier()
 
-    # アーキテクチャ保存
-    json_path = RESULT_ROOT / "classifier.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        f.write(model.to_json())
+    if weight_path.exists():
+        # 既に学習済みなら学習をスキップして重みだけ読み込み、テスト評価に進む
+        print(f"[SKIP] 既存の重みを読み込みます: {weight_path}")
+        model.load_weights(str(weight_path))
+    else:
+        # ── 全素材の学習・バリデーションデータを読み込む ──────────
+        print(f"=== データ読み込み（学習/val: ifuku{TRAIN_IFUKU_START}~{TRAIN_IFUKU_END}） ===")
+        combined_df = load_all_materials(TRAIN_IFUKU_START, TRAIN_IFUKU_END, tag="train/val")
 
-    history = model.fit(
-        train_seq,
-        epochs=EPOCHS,
-        validation_data=val_seq,
-        verbose=1
-    )
+        if len(combined_df) == 0:
+            print("[ERROR] 学習データが読み込めませんでした")
+            return
 
-    model.save_weights(str(weight_path))
-    print(f"\n重み保存: {weight_path}")
+        print(f"  合計: {len(combined_df)} samples")
 
-    pd.DataFrame(history.history).to_csv(
-        RESULT_ROOT / "learning_log.csv",
-        index=False, encoding="utf-8-sig"
-    )
+        # ── ifuku番号単位でtrain/val分割 ─────────────────────────
+        all_ids = sorted(combined_df["ifuku_id"].unique().tolist())
+        random.Random(RANDOM_SEED).shuffle(all_ids)
+        val_size  = max(1, int(len(all_ids) * VAL_RATIO))
+        val_ids   = sorted(all_ids[:val_size])
+        train_ids = sorted(all_ids[val_size:])
 
-    # ── val精度表示 ───────────────────────────────────────────
-    val_loss, val_acc = model.evaluate(val_seq, verbose=0)
-    print(f"\nval accuracy: {val_acc:.4f}")
-    print(f"val loss    : {val_loss:.4f}")
+        train_df = combined_df[combined_df["ifuku_id"].isin(train_ids)].reset_index(drop=True)
+        val_df   = combined_df[combined_df["ifuku_id"].isin(val_ids)].reset_index(drop=True)
 
-    # ── ラベルマップ保存（リアルタイム推定時に参照） ──────────
-    import json
-    label_info = {
-        "label_map": LABEL_MAP,
-        "id_to_material": {v: k for k, v in LABEL_MAP.items()},
-        "mask_pattern": MASK_PATTERN
-    }
-    with open(RESULT_ROOT / "label_info.json", "w", encoding="utf-8") as f:
-        json.dump(label_info, f, ensure_ascii=False, indent=2)
-    print(f"ラベル情報保存: {RESULT_ROOT / 'label_info.json'}")
+        print(f"\n  train: {len(train_df)} samples ({len(train_ids)} sessions)")
+        print(f"  val  : {len(val_df)} samples ({len(val_ids)} sessions)")
 
-    del model, train_seq, val_seq
+        # ── Sequence作成 ──────────────────────────────────────────
+        train_seq = ClassifierSequence(train_df, batch_size=BATCH_SIZE, shuffle=True)
+        val_seq   = ClassifierSequence(val_df,   batch_size=BATCH_SIZE, shuffle=False)
+
+        # ── 学習 ──────────────────────────────────────────────────
+        print("\n=== 学習開始 ===")
+        with open(json_path, "w", encoding="utf-8") as f:
+            f.write(model.to_json())
+
+        history = model.fit(
+            train_seq,
+            epochs=EPOCHS,
+            validation_data=val_seq,
+            verbose=1
+        )
+
+        model.save_weights(str(weight_path))
+        print(f"\n重み保存: {weight_path}")
+
+        pd.DataFrame(history.history).to_csv(
+            RESULT_ROOT / "learning_log.csv",
+            index=False, encoding="utf-8-sig"
+        )
+
+        # ── val精度表示 ───────────────────────────────────────────
+        val_loss, val_acc = model.evaluate(val_seq, verbose=0)
+        print(f"\nval accuracy: {val_acc:.4f}")
+        print(f"val loss    : {val_loss:.4f}")
+
+        # ── ラベルマップ保存（リアルタイム推定時に参照） ──────────
+        label_info = {
+            "label_map": LABEL_MAP,
+            "id_to_material": {v: k for k, v in LABEL_MAP.items()},
+            "mask_pattern": MASK_PATTERN
+        }
+        with open(RESULT_ROOT / "label_info.json", "w", encoding="utf-8") as f:
+            json.dump(label_info, f, ensure_ascii=False, indent=2)
+        print(f"ラベル情報保存: {RESULT_ROOT / 'label_info.json'}")
+
+        del train_seq, val_seq
+        gc.collect()
+
+    # ── テスト評価（ifuku31〜35、重み更新なし。学習をスキップした場合も必ず実行） ──
+    print(f"\n=== データ読み込み（テスト: ifuku{TEST_IFUKU_START}~{TEST_IFUKU_END}） ===")
+    test_df = load_all_materials(TEST_IFUKU_START, TEST_IFUKU_END, tag="test")
+    evaluate_on_test(model, test_df, RESULT_ROOT)
+
+    del model
     gc.collect()
 
     print("\n=== 完了 ===")
