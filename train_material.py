@@ -70,6 +70,12 @@ MATERIAL_DIRS = {
 # マスクパターン（フォルダ名）
 MASK_PATTERNS = ["nail_and_tip", "nail_only", "tip_only"]
 
+# ── train/val範囲 ──
+# ifuku31以降は素材分類器と同じく完全ホールドアウト（重み更新に一切使わない）。
+# ここでは train_val の元データを ifuku1~TRAINVAL_ID_END に制限する。
+TRAINVAL_ID_END = 30
+
+
 # =========================================================
 # ユーティリティ
 # =========================================================
@@ -83,11 +89,11 @@ def resolve_img_path(path_str: str, mask_pattern: str) -> Path:
     """
     datalog.csvのパスをマスク済みパターンのパスに変換する。
     例：
-      元パス: felt_0-10xyz/ifuku1/360deg/0.png
-      変換後: felt_0-10xyz_masked/ifuku1/360deg/nail_and_tip/0.png
+      元パス: felt_0-10xyz_dedup/ifuku1/360deg/0.png
+      変換後: felt_0-10xyz_dedup_masked/ifuku1/360deg/nail_and_tip/0.png
 
     やること：
-      1. 素材フォルダ名に_maskedを付ける（felt_0-10xyz → felt_0-10xyz_masked）
+      1. 素材フォルダ名(xxx_0-10xyz_dedup)に_maskedを付ける
       2. 360deg/の直下にマスクパターンフォルダを挿入
     """
     p = Path(path_str)
@@ -102,9 +108,11 @@ def resolve_img_path(path_str: str, mask_pattern: str) -> Path:
     # パーツに分解して変換する
     parts = list(p.parts)
 
-    # ① 素材フォルダ名（xxxxx_0-10xyz）に_maskedを付ける
+    # ① 素材フォルダ名（xxx_0-10xyz_dedup 等）に_maskedを付ける
+    #    ※ endswith("_0-10xyz") だと "felt_0-10xyz_dedup" にマッチしないため
+    #      部分一致(in)でチェックする（train_material_classifier.pyと同じロジック）
     for i, part in enumerate(parts):
-        if part.endswith("_0-10xyz") and not part.endswith("_masked"):
+        if "_0-10xyz" in part and "_masked" not in part:
             parts[i] = part + "_masked"
             break
 
@@ -152,6 +160,22 @@ def calc_metrics(y_true: np.ndarray, y_pred: np.ndarray, prefix: str) -> dict:
         out[f"{prefix}_{name}_MAE"]  = mae
         out[f"{prefix}_{name}_RMSE"] = rmse
     return out
+
+
+def check_image_paths_sane(df: pd.DataFrame, n_check: int = 5) -> bool:
+    """
+    学習を始める前に、img_pathの一部が実在するか確認する。
+    ここで全滅していたら resolve_img_path のパス変換がまだ間違っている合図。
+    """
+    sample_paths = df["img_path"].sample(min(n_check, len(df)), random_state=RANDOM_SEED).tolist()
+    n_exist = sum(1 for p in sample_paths if Path(p).exists())
+    print(f"  [CHECK] パス実在確認: {n_exist}/{len(sample_paths)} 件見つかりました")
+    if n_exist == 0:
+        print("  [ERROR] サンプルパスが1件も実在しません。resolve_img_path のロジックを確認してください。")
+        for p in sample_paths:
+            print(f"     見つからない例: {p}")
+        return False
+    return True
 
 
 # =========================================================
@@ -207,6 +231,15 @@ def load_datalog(namelist_path: Path, mask_pattern: str) -> pd.DataFrame:
 
     all_df = all_df.dropna(subset=["ifuku_id"]).copy()
     all_df["ifuku_id"] = all_df["ifuku_id"].astype(int)
+
+    # ── ifuku31以降を完全に除外（学習・valに一切混ざらないようにする） ──
+    before_n = len(all_df)
+    all_df = all_df[all_df["ifuku_id"] <= TRAINVAL_ID_END].reset_index(drop=True)
+    excluded_n = before_n - len(all_df)
+    if excluded_n > 0:
+        print(f"  [INFO] ifuku{TRAINVAL_ID_END + 1}以降を{excluded_n}件除外"
+              f"（完全ホールドアウト、train/valには一切使いません）")
+
     return all_df
 
 
@@ -295,11 +328,13 @@ def build_model() -> Model:
 # =========================================================
 # 1モデル分の学習
 # =========================================================
-def train_one_model(df: pd.DataFrame, result_dir: Path, model_name: str):
+def train_one_model(df: pd.DataFrame, result_dir: Path, model_name: str) -> dict:
     """
     df：学習に使う全データ（ifuku番号付き）
     result_dir：保存先フォルダ
     model_name：ログ表示用の名前
+
+    戻り値: {"status": "success"/"skipped"/"aborted", "val_Fz_RMSE": float or None, ...}
     """
     result_dir.mkdir(parents=True, exist_ok=True)
     (result_dir / "weights").mkdir(exist_ok=True)
@@ -308,9 +343,17 @@ def train_one_model(df: pd.DataFrame, result_dir: Path, model_name: str):
     weight_path = result_dir / "weights" / "weight_ifuku_for0-10.h5"
 
     # ── すでに重みがある場合はスキップ ────────────────────
+    # ★新しいマスク画像で再学習したい場合は、事前にこのweightsフォルダを
+    #   削除 or リネームしておくこと。残したままだと古い重みのまま使われ続ける。
     if weight_path.exists():
-        print(f"  [SKIP] 重みが存在します: {weight_path}")
-        return
+        print(f"  [SKIP] 重みが既に存在するため学習をスキップ: {weight_path}")
+        print(f"         新しいマスク画像で再学習したい場合はこのファイルを削除してから再実行してください。")
+        return {"status": "skipped", "val_Fz_RMSE": None, "val_Fx_RMSE": None, "val_Fy_RMSE": None}
+
+    # ── パスの実在チェック（黒画像学習の事故防止） ─────────
+    if not check_image_paths_sane(df):
+        print(f"  [ABORT] {model_name}: 画像パスが解決できないため学習を中止します。")
+        return {"status": "aborted_bad_path", "val_Fz_RMSE": None, "val_Fx_RMSE": None, "val_Fy_RMSE": None}
 
     # ── ifuku番号単位でtrain/val分割 ─────────────────────
     all_ids = sorted(df["ifuku_id"].unique().tolist())
@@ -370,8 +413,58 @@ def train_one_model(df: pd.DataFrame, result_dir: Path, model_name: str):
     print(f"  val Fx RMSE: {metrics['val_Fx_RMSE']:.3f} N")
     print(f"  val Fy RMSE: {metrics['val_Fy_RMSE']:.3f} N")
 
+    # ── GPUメモリ解放 ─────────────────────────────────────
+    # 15モデルを1プロセス内で連続学習するため、これが無いと
+    # VGG16の読み込みが積み重なってGPUメモリを圧迫し、途中でOOMする恐れがある。
     del model, train_seq, val_seq
+    tf.keras.backend.clear_session()
     gc.collect()
+
+    return {
+        "status": "success",
+        "val_Fz_RMSE": metrics["val_Fz_RMSE"],
+        "val_Fx_RMSE": metrics["val_Fx_RMSE"],
+        "val_Fy_RMSE": metrics["val_Fy_RMSE"],
+    }
+
+
+def run_model_safely(df: pd.DataFrame, result_dir: Path, model_name: str, progress_log_path: Path) -> None:
+    """
+    train_one_modelを例外から保護して実行し、結果を進捗ログに追記する。
+    ここで例外を握りつぶすことで、1モデルの予期しない失敗
+    （OOM、画像破損など）が残りのモデル学習を止めないようにする。
+    """
+    import datetime
+    import csv as csv_module
+
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result = {"status": "error", "val_Fz_RMSE": None, "val_Fx_RMSE": None, "val_Fy_RMSE": None}
+    error_message = ""
+
+    try:
+        result = train_one_model(df, result_dir, model_name)
+    except Exception as e:
+        import traceback
+        error_message = f"{type(e).__name__}: {e}"
+        print(f"  [ERROR] {model_name}: {error_message}")
+        traceback.print_exc()
+        # 例外が起きてもGPUメモリだけは解放しておく
+        try:
+            tf.keras.backend.clear_session()
+            gc.collect()
+        except Exception:
+            pass
+
+    # 進捗ログに追記（ファイルが無ければヘッダーから作る）
+    write_header = not progress_log_path.exists()
+    with open(progress_log_path, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv_module.writer(f)
+        if write_header:
+            writer.writerow(["timestamp", "model_name", "status",
+                             "val_Fz_RMSE", "val_Fx_RMSE", "val_Fy_RMSE", "error"])
+        writer.writerow([timestamp, model_name, result["status"],
+                         result.get("val_Fz_RMSE"), result.get("val_Fx_RMSE"),
+                         result.get("val_Fy_RMSE"), error_message])
 
 
 # =========================================================
@@ -381,6 +474,12 @@ def main():
     set_seed(RANDOM_SEED)
     RESULT_ROOT.mkdir(parents=True, exist_ok=True)
 
+    progress_log_path = RESULT_ROOT / "training_progress.csv"
+    print(f"進捗ログ: {progress_log_path}")
+    print("（放置して戻ってきたら、まずこのCSVを確認すれば全モデルの成否が一覧でわかります）\n")
+
+    print(f"=== 実行予定のマスクパターン: {MASK_PATTERNS} ===\n")
+
     for mask_pattern in MASK_PATTERNS:
         print(f"\n{'='*60}")
         print(f"マスクパターン: {mask_pattern}")
@@ -389,26 +488,37 @@ def main():
         # ── 素材ごとの個別モデル ──────────────────────────
         for mat_name, mat_dir_name in MATERIAL_DIRS.items():
             namelist_path = DATA_ROOT / mat_dir_name / "namelist.csv"
+            model_name = f"{mat_name}_{mask_pattern}"
 
-            print(f"\n--- {mat_name} × {mask_pattern} ---")
+            print(f"\n--- {model_name} ---")
 
-            df = load_datalog(namelist_path, mask_pattern)
+            try:
+                df = load_datalog(namelist_path, mask_pattern)
+            except Exception as e:
+                print(f"  [ERROR] datalog読み込み失敗: {e}")
+                continue
+
             if len(df) == 0:
                 print("  [SKIP] データが空です")
                 continue
 
             print(f"  全データ: {len(df)} samples")
 
-            result_dir = RESULT_ROOT / f"{mat_name}_{mask_pattern}"
-            train_one_model(df, result_dir, f"{mat_name}_{mask_pattern}")
+            result_dir = RESULT_ROOT / model_name
+            run_model_safely(df, result_dir, model_name, progress_log_path)
 
         # ── 全素材混合モデル ──────────────────────────────
-        print(f"\n--- all_materials × {mask_pattern} ---")
+        model_name = f"all_materials_{mask_pattern}"
+        print(f"\n--- {model_name} ---")
 
         all_dfs = []
         for mat_name, mat_dir_name in MATERIAL_DIRS.items():
             namelist_path = DATA_ROOT / mat_dir_name / "namelist.csv"
-            df = load_datalog(namelist_path, mask_pattern)
+            try:
+                df = load_datalog(namelist_path, mask_pattern)
+            except Exception as e:
+                print(f"  [ERROR] {mat_name} datalog読み込み失敗: {e}")
+                continue
             if len(df) > 0:
                 df["material"] = mat_name
                 all_dfs.append(df)
@@ -418,12 +528,9 @@ def main():
             continue
 
         # ── 各素材から均等にサンプリングして合計を個別モデルと揃える ──
-        # 個別モデル（1素材）と同じ合計枚数になるように
-        # 各素材から均等に取る
-        # 例：各素材6万枚 × 4素材 → 各素材から1.5万枚 → 合計6万枚
         total_samples = sum(len(df) for df in all_dfs)
-        avg_per_mat   = total_samples // len(all_dfs)  # 平均サンプル数（個別モデルと同じスケール）
-        per_mat_target = avg_per_mat // len(all_dfs)   # 各素材から取る枚数
+        avg_per_mat   = total_samples // len(all_dfs)
+        per_mat_target = avg_per_mat // len(all_dfs)
 
         sizes = {df["material"].iloc[0]: len(df) for df in all_dfs}
         print(f"  各素材のサンプル数: {sizes}")
@@ -433,7 +540,6 @@ def main():
         for df in all_dfs:
             mat_name = df["material"].iloc[0]
             if len(df) > per_mat_target:
-                # ifuku番号単位でサンプリング
                 all_ids = sorted(df["ifuku_id"].unique().tolist())
                 random.Random(RANDOM_SEED).shuffle(all_ids)
                 sampled_ids = []
@@ -454,10 +560,11 @@ def main():
         combined_df = pd.concat(sampled_dfs, ignore_index=True)
         print(f"  混合モデル合計: {len(combined_df)} samples（個別モデルと同スケール）")
 
-        result_dir = RESULT_ROOT / f"all_materials_{mask_pattern}"
-        train_one_model(combined_df, result_dir, f"all_materials_{mask_pattern}")
+        result_dir = RESULT_ROOT / model_name
+        run_model_safely(combined_df, result_dir, model_name, progress_log_path)
 
-    print("\n\n=== 全モデル学習完了 ===")
+    print("\n\n=== 全モデル学習完了（進捗ログで成否を確認してください） ===")
+    print(f"進捗ログ: {progress_log_path}")
 
 
 if __name__ == "__main__":
