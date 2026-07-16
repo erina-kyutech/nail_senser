@@ -116,7 +116,9 @@ CLASSIFY_EVERY_N_FRAMES = 15
 
 # ---- リアルタイム画像の保存 ----
 SAVE_IMAGES = False
-SAVE_IMAGE_DIR = "./realtime_images"
+# 保存先はCSVと同じ回ごとのフォルダに自動で分けられる:
+#   ./realtime_logs/<素材名>/images_<連番2桁>/0.png, 1.png, ...
+# （固定フォルダだと次の回に0.pngから上書きされてしまうため）
 SAVE_IMAGE_EXT = ".png"   # 速度優先なら ".jpg" もあり（画質より速度が欲しい場合）
 
 # ---- Excel(.xlsx)への定期エクスポート ----
@@ -430,16 +432,25 @@ class RealTime:
         self._last_class_weights = {m: 1.0 / len(MATERIALS) for m in MATERIALS}
         self._classify_counter = 0
 
-        # ---- 画像の非同期保存 ----
+        # ---- データログ（素材別フォルダ・連番自動）----
+        self.material_name = select_material_name()
+        self.datalog_path, run_no = build_datalog_path(self.material_name)
+        self.excel_path = os.path.splitext(self.datalog_path)[0] + ".xlsx"
+        print(f"[INFO] この回のログ: {self.datalog_path}（{self.material_name} {run_no}回目）")
+
+        # ---- 画像の非同期保存（CSVと同じ回ごとのフォルダに保存）----
         self._save_queue = None
         self._save_thread = None
         self._save_frame_idx = 0
+        self.save_image_dir = os.path.join(
+            os.path.dirname(self.datalog_path), f"images_{run_no:02d}"
+        )
         if SAVE_IMAGES:
-            os.makedirs(SAVE_IMAGE_DIR, exist_ok=True)
+            os.makedirs(self.save_image_dir, exist_ok=True)
             self._save_queue = queue.Queue()
             self._save_thread = threading.Thread(target=self._save_worker, daemon=False)
             self._save_thread.start()
-            print(f"画像保存: 有効 -> {SAVE_IMAGE_DIR}")
+            print(f"画像保存: 有効 -> {self.save_image_dir}")
 
         # ---- camera ----
         self.cap_l = cv2.VideoCapture(CAM_LEFT_INDEX)
@@ -470,11 +481,7 @@ class RealTime:
 
         self.N2gf = 101.972  # g -> N
 
-        # csv（素材別フォルダ・連番自動）
-        self.material_name = select_material_name()
-        self.datalog_path, run_no = build_datalog_path(self.material_name)
-        self.excel_path = os.path.splitext(self.datalog_path)[0] + ".xlsx"
-        print(f"[INFO] この回のログ: {self.datalog_path}（{self.material_name} {run_no}回目）")
+        # csv（パスは__init__冒頭で決定済み）
         self.data_csv = open(self.datalog_path, "w", newline="")
         self.w = csv.writer(self.data_csv)
         header = (
@@ -764,7 +771,7 @@ class RealTime:
                     # ---- 画像の非同期保存（キューに投げるだけでメインループはブロックしない） ----
                     if SAVE_IMAGES:
                         img_filename = f"{self._save_frame_idx}{SAVE_IMAGE_EXT}"
-                        img_path = os.path.join(SAVE_IMAGE_DIR, img_filename)
+                        img_path = os.path.join(self.save_image_dir, img_filename)
                         self._save_queue.put((img_path, masked_bgr.copy()))
                         self._save_frame_idx += 1
                     else:
@@ -864,6 +871,11 @@ class RealTime:
                     print(f"\n[INFO] データ未記録のため空ログを削除: {self.datalog_path}")
                 except OSError:
                     pass
+                if SAVE_IMAGES:
+                    try:
+                        os.rmdir(self.save_image_dir)  # 空のときだけ消える
+                    except OSError:
+                        pass
             else:
                 print(f"\n[INFO] ログ保存済み: {self.datalog_path}（{len(self._all_rows)}行）")
             self.cap_l.release()
