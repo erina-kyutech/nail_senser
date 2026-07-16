@@ -10,7 +10,7 @@ from matplotlib.gridspec import GridSpec
 import csv
 from multiprocessing import Process, Value
 import serial
-import threading  # ★ 追加
+import threading
 
 
 def crop_with_center_wh_safe(img, cx, cy, w, h):
@@ -295,7 +295,7 @@ class gf2000:
 
 
 class GraphMake:
-    # ====== 素材選択の定義（追加） ======
+    # ====== 素材選択の定義 ======
     MATERIAL_OPTIONS = {
         '1': ('felt', 'felt_0-10xyz'),
         '2': ('acrylic', 'acrylic_0-10xyz'),
@@ -340,7 +340,6 @@ class GraphMake:
                         return force_path
 
             print(f'[WARN] "{raw}" は認識できませんでした。1-4の番号か素材名で入力し直してください。\n')
-    # ====== ここまで追加 ======
 
     def __init__(self):
         nowdir = os.path.dirname(__file__)
@@ -350,7 +349,7 @@ class GraphMake:
 
         self.Fz = 10
 
-        # ★素材はコメントアウトではなく実行時選択に変更（変更）
+        # 素材は実行時選択
         self.force_path = self._select_material()
 
         self.degree_str = 360
@@ -363,12 +362,10 @@ class GraphMake:
         self.datalog_path = self.save_dir + '/datalog.csv'
         self.namelist_path = './datas/' + self.force_path + '/namelist.csv'
 
-        # ====== 回転オフセットの管理（追加） ======
+        # ====== 回転オフセットの管理 ======
         # 元の12方向パターンは30度おきなので、施行を重ねるたびに
         # ROTATION_STEP_DEG ずつ時計回りにパターン全体をずらすことで、
         # 複数回の撮影を合計した時に30度の隙間が埋まっていくようにする。
-        # 素材フォルダ単位で「これまで何回撮ったか」をテキストファイルに記録し、
-        # 起動ごとに自動で読み込み→次回用に+1して書き戻す。
         self.ROTATION_STEP_DEG = 5.0  # 6回で5度刻みに密になる
         self.rotation_state_path = './datas/' + self.force_path + '/rotation_state.txt'
 
@@ -388,7 +385,6 @@ class GraphMake:
 
         print(f'[INFO] この施行の回転オフセット: {self.direction_offset_deg:.1f}度'
               f'（この素材でこれまでの撮影回数: {run_count}）')
-        # ====== ここまで追加 ======
 
         self.name_csv = open(self.namelist_path, 'a', newline='')
         self.name_writing = csv.writer(self.name_csv)
@@ -424,10 +420,33 @@ class GraphMake:
         self.OUT_W_LEFT = 150
         self.OUT_W_RIGHT = 140
 
+        # 注意: 名前は n_* だが、実機では左半分(cap_nail経由)に「指先」が映っている。
+        #       右半分(t_*, cap_tip経由)に「爪」が映っている。
+        #       既存データセット・学習済みモデルとの整合のため並びは変えない。
         self.n_cx, self.n_cy = 499, 250
         self.n_w, self.n_h = int(282 * 1.3), int(409 * 0.9)
         self.t_cx, self.t_cy = 324, 550
         self.t_w, self.t_h = int(182 * 1.7), int(136 * 1.0)
+
+        # ====== 指先ROI(左半分)の高さ手動調整 ======
+        # カメラが指先を横向きに見ているため、実世界の「高さ」は
+        # 生画像上では「左右」(n_cx) に対応する。u/d で n_cx を動かす。
+        self.TIP_STEP = 1        # u/d 1回の移動量[px]
+        self.TIP_STEP_BIG = 5    # shift+u/d の移動量[px]
+        self.TIP_DIR = 1         # uを押したときの符号。逆に動くと感じたら -1 に
+        self.N_GUIDE = 5         # 表示ガイド縦線の本数
+
+        # 調整値を素材フォルダ単位で保存・次回復元
+        # （v2はn_cy用だったのでv3に変更。混同防止）
+        self.tip_roi_state_path = './datas/' + self.force_path + '/tip_roi_state_v3.txt'
+        if os.path.exists(self.tip_roi_state_path):
+            try:
+                with open(self.tip_roi_state_path, 'r', encoding='utf-8') as f:
+                    self.n_cx = int(f.read().strip())
+                print(f'[INFO] 前回の指先ROI中心を復元: n_cx={self.n_cx}')
+            except (ValueError, OSError):
+                pass
+        # ====== ここまで ======
 
         self.cap_nail = cv2.VideoCapture(self.CAM_NAIL, cv2.CAP_MSMF)
         time.sleep(0.8)
@@ -438,16 +457,16 @@ class GraphMake:
         if (not self.cap_nail.isOpened()) or (not self.cap_tip.isOpened()):
             raise RuntimeError(f'IO Error (2 cameras). opened_nail={self.cap_nail.isOpened()} opened_tip={self.cap_tip.isOpened()}')
 
-        # ★ バッファ初期化
+        # バッファ初期化
         self._frame_nail = None
-        self._frame_tip  = None
-        self._lock_nail  = threading.Lock()
-        self._lock_tip   = threading.Lock()
+        self._frame_tip = None
+        self._lock_nail = threading.Lock()
+        self._lock_tip = threading.Lock()
         self._cam_running = True
 
-        # ★ カメラ読み込みスレッド起動（2台同時に読み続ける）
+        # カメラ読み込みスレッド起動（2台同時に読み続ける）
         self._thread_nail = threading.Thread(target=self._read_nail, daemon=True)
-        self._thread_tip  = threading.Thread(target=self._read_tip,  daemon=True)
+        self._thread_tip = threading.Thread(target=self._read_tip, daemon=True)
         self._thread_nail.start()
         self._thread_tip.start()
         time.sleep(0.5)  # 最初のフレームが入るまで待つ
@@ -483,9 +502,7 @@ class GraphMake:
         self.axM.set_xlabel('Shear force x [N]', fontsize=label_fontsize)
         self.axM.set_ylabel('Normal force z [N]', fontsize=label_fontsize)
 
-        # ====== タイトルに今回の回転オフセットを表示（変更） ======
         self.axR.set_title(f'Shear force command\n(rotation offset: {self.direction_offset_deg:.1f} deg)', fontsize=title_fontsize)
-        # ====== ここまで変更 ======
         self.axR.set_xlabel('Shear force x [N]', fontsize=label_fontsize)
         self.axR.set_ylabel('Shear force y [N]', fontsize=label_fontsize)
 
@@ -510,7 +527,7 @@ class GraphMake:
         self.image_init0 = np.zeros((self.h, self.w, 3), dtype='uint8')
         self.image_plt = self.axL.imshow(self.image_init0, animated=True)
 
-        # ★ FPS計測用
+        # FPS計測用
         self._fps_prev_time = time.perf_counter()
         self._fps = 0.0
 
@@ -523,7 +540,7 @@ class GraphMake:
         self.now_Fr = 0.0
         self.now_Fzz = 0.0
 
-    # ★ 爪カメラを読み続けるスレッド
+    # 爪カメラ(左半分ソース)を読み続けるスレッド
     def _read_nail(self):
         while self._cam_running:
             ret, frame = self.cap_nail.read()
@@ -531,7 +548,7 @@ class GraphMake:
                 with self._lock_nail:
                     self._frame_nail = frame
 
-    # ★ 指先カメラを読み続けるスレッド
+    # 指先カメラ(右半分ソース)を読み続けるスレッド
     def _read_tip(self):
         while self._cam_running:
             ret, frame = self.cap_tip.read()
@@ -539,7 +556,7 @@ class GraphMake:
                 with self._lock_tip:
                     self._frame_tip = frame
 
-    # ====== 回転オフセット適用用ヘルパー（追加） ======
+    # ====== 回転オフセット適用用ヘルパー ======
     def _rotate_fr_ff(self, fr, ff):
         """
         お手本の軌跡・目標点(Fr, Ff)を self._rotation_rad だけ時計回りに回転する。
@@ -551,13 +568,33 @@ class GraphMake:
         fr_rot = fr * cos_t + ff * sin_t
         ff_rot = -fr * sin_t + ff * cos_t
         return fr_rot, ff_rot
-    # ====== ここまで追加 ======
+
+    # ====== 指先ROI(左半分, n_cx)の高さ調整 ======
+    # 実世界の高さ = 生画像の左右方向
+    def _save_tip_roi(self):
+        try:
+            with open(self.tip_roi_state_path, 'w', encoding='utf-8') as f:
+                f.write(str(self.n_cx))
+        except OSError:
+            pass
+
+    def _move_tip_roi(self, direction, big=False):
+        step = self.TIP_STEP_BIG if big else self.TIP_STEP
+        self.n_cx += step * direction * self.TIP_DIR
+        with self._lock_nail:
+            frame = self._frame_nail
+        if frame is not None:
+            W = frame.shape[1]
+            self.n_cx = int(max(self.n_w // 2, min(self.n_cx, W - self.n_w // 2)))
+        print(f'\n[ROI] 指先(左半分)中心x = {self.n_cx}')
+        self._save_tip_roi()
+    # ====== ここまで ======
 
     def onkey(self, event):
         if event.key == 'escape':
             print('esc')
             ser_flag.value = False
-            self._cam_running = False  # ★ スレッド停止
+            self._cam_running = False
             try:
                 self.data_csv.close()
             except Exception:
@@ -578,8 +615,22 @@ class GraphMake:
             print(rec_flag.value)
             self.graphstart = time.perf_counter()
 
+        # ====== 指先ROI調整キー ======
+        # レコーディング中の誤操作でROIが動くとデータ内で分布が変わるためガード
+        if event.key in ('u', 'shift+u'):
+            if rec_flag.value:
+                print('\n[ROI] 記録中はROI調整できません')
+            else:
+                self._move_tip_roi(-1, big=('shift' in event.key))
+        if event.key in ('d', 'shift+d'):
+            if rec_flag.value:
+                print('\n[ROI] 記録中はROI調整できません')
+            else:
+                self._move_tip_roi(+1, big=('shift' in event.key))
+        # ====== ここまで ======
+
     def updateframe(self, dum):
-        # ★ FPS計算
+        # FPS計算
         now = time.perf_counter()
         dt = now - self._fps_prev_time
         self._fps_prev_time = now
@@ -587,7 +638,7 @@ class GraphMake:
             self._fps = self._fps * 0.9 + (1.0 / dt) * 0.1  # 指数移動平均
         print(f'\rFPS: {self._fps:.1f}', end='')
 
-        # ★ カメラを直接読まずバッファから取得する
+        # カメラを直接読まずバッファから取得する
         with self._lock_nail:
             base_n = self._frame_nail
         with self._lock_tip:
@@ -608,7 +659,16 @@ class GraphMake:
         net_in = np.concatenate([nail_in, tip_in], axis=1)  # BGRのまま保存
 
         net_rgb = cv2.cvtColor(net_in, cv2.COLOR_BGR2RGB)
-        self.image_plt.set_array(net_rgb)
+
+        # ---- 表示専用ガイド縦線（左半分＝指先側、保存画像 net_in には入らない）----
+        disp_rgb = net_rgb.copy()
+        xs = np.linspace(0, self.OUT_W_LEFT - 1, self.N_GUIDE + 2).astype(int)[1:-1]
+        mid = xs[len(xs) // 2]
+        for x in xs:
+            color = (0, 255, 0) if x == mid else (255, 0, 0)  # RGB表示なので赤=(255,0,0)
+            cv2.line(disp_rgb, (int(x), 0), (int(x), self.h - 1), color, 1)
+        self.image_plt.set_array(disp_rgb)
+        # ---- ここまで ----
 
         self.Fz_line = self.Fz / 2 * (1 - np.cos(2 * np.pi * self.fz * self.t_line))
         self.Fzz_line = 0
@@ -643,11 +703,11 @@ class GraphMake:
         elif (45 <= self.rec_t and self.rec_t < 50):
             self.Fr_line = self.Fz / 4 * (1 - np.cos(2 * np.pi * self.fz * self.t_line)) * (-1)
 
-        # ====== 回転オフセットを適用（追加） ======
+        # ====== 回転オフセットを適用 ======
         # 実際の測定値(Fr,Ff)は回転しない。お手本の矢印だけをずらすことで
         # 人がそれに追従すれば、施行ごとに違う方向の力が自然と入るようになる。
         self.Fr_line, self.Ff_line = self._rotate_fr_ff(self.Fr_line, self.Ff_line)
-        # ====== ここまで追加 ======
+        # ====== ここまで ======
 
         self.line.set_data(self.Fr_line, self.Ff_line)
         self.line_M.set_data(self.Fzz_line, self.Fz_line)
@@ -713,7 +773,7 @@ class GraphMake:
                     self.now_Fr = self.Fz / 4 * (np.cos(2 * np.pi * self.fz * self.rec_t) - 1)
 
                 framename = self.save_dir + '/' + str(self.datanum) + '.png'
-                cv2.imwrite(framename, net_in)  # BGRのまま保存
+                cv2.imwrite(framename, net_in)  # BGRのまま保存（ガイド線なし）
                 self.data_writing.writerow([framename, Fz, Fr, Ff])
                 self.datanum += 1
             else:
@@ -725,9 +785,9 @@ class GraphMake:
             self.rec2.set_data(Fzz, Fz)
             self.rec4.set_data(Fr, Ff)
 
-            # ====== 回転オフセットを適用（追加） ======
+            # ====== 回転オフセットを適用 ======
             self.now_Fr, self.now_Ff = self._rotate_fr_ff(self.now_Fr, self.now_Ff)
-            # ====== ここまで追加 ======
+            # ====== ここまで ======
 
             self.now_F.set_data(self.now_Fr, self.now_Ff)
             self.now_R.set_data(self.now_Fzz, self.now_Fz)
@@ -766,7 +826,7 @@ if __name__ == '__main__':
     normal_loadcell = gf2000(z_port); normal_loadcell.sub_ready()
 
     # daemon=True にして、メイン側が異常終了しても
-    # 子プロセスがCOMポートを掴んだまま残らないようにする（変更）
+    # 子プロセスがCOMポートを掴んだまま残らないようにする
     sub_z = Process(target=gf2000.sub_loop, args=[z_port, ser_flag, normal_force], daemon=True)
     sub_z.start()
 
