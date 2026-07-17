@@ -300,13 +300,13 @@ class GraphMake:
         '1': ('felt', 'felt_0-10xyz'),
         '2': ('acrylic', 'acrylic_0-10xyz'),
         '3': ('paper', 'paper_0-10xyz'),
-        '4': ('aluminum', 'aluminum_0-10xyz'),
+        '4': ('stenless', 'stenless_0-10xyz'),
     }
     MATERIAL_NAME_ALIASES = {
         'felt': 'felt', 'フェルト': 'felt',
         'acrylic': 'acrylic', 'アクリル': 'acrylic',
         'paper': 'paper', '紙': 'paper', 'かみ': 'paper',
-        'aluminum': 'aluminum', 'aluminium': 'aluminum', 'アルミ': 'aluminum', 'アルミニウム': 'aluminum',
+        'stenless': 'stenless', 'stenless': 'stenless', 'ステンレス': 'stenless', 'ステンレス': 'stenless',
     }
 
     def _select_material(self):
@@ -320,7 +320,7 @@ class GraphMake:
             '  1: felt (フェルト)\n'
             '  2: acrylic (アクリル)\n'
             '  3: paper (紙)\n'
-            '  4: aluminum (アルミ)\n'
+            '  4: stenless (ステンレス)\n'
             '番号 または 素材名で入力 > '
         )
         while True:
